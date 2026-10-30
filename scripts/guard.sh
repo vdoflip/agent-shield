@@ -100,7 +100,7 @@ PY
 }
 
 status() {
-  # shellcheck source=pins.sh
+  # shellcheck source=SCRIPTDIR/pins.sh
   . "$SELF_ROOT/scripts/pins.sh"
   if command -v reflex >/dev/null 2>&1; then
     printf 'Reflex: %s (pinned %s)\n' "$(reflex version 2>/dev/null | tail -n 1)" "$REFLEX_VERSION"

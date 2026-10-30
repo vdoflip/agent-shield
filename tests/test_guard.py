@@ -9,6 +9,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / "scripts" / "guard.sh"
 INSTALL = ROOT / "install.sh"
+# CI also runs the suite with macOS /bin/bash (3.2) to check old-bash compatibility.
+BASH = os.environ.get("AGENT_SHIELD_TEST_BASH", "bash")
 MOCK = '''#!/usr/bin/env python3
 import json, os, sys
 out = sys.argv[sys.argv.index('--output') + 1]
@@ -47,7 +49,7 @@ class Base(unittest.TestCase):
         self.env.pop('CODEX_HOME', None)
 
     def run_guard(self, *args, env=None):
-        return subprocess.run(['bash', str(GUARD), *map(str,args)], text=True,
+        return subprocess.run([BASH, str(GUARD), *map(str,args)], text=True,
                               capture_output=True, env=env or self.env, timeout=20)
 
 
@@ -111,7 +113,7 @@ class GuardTests(Base):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_setup_default_is_dry_plan(self):
-        result = subprocess.run(['bash', str(ROOT/'scripts'/'setup-dependencies.sh')],
+        result = subprocess.run([BASH, str(ROOT/'scripts'/'setup-dependencies.sh')],
                                 capture_output=True, text=True, env=self.env, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Nothing installed', result.stdout)
@@ -125,7 +127,7 @@ class GuardTests(Base):
         self.assertNotIn('latest', result.stdout)
 
     def test_install_meta_skill(self):
-        result = subprocess.run(['bash', str(INSTALL)], capture_output=True, text=True,
+        result = subprocess.run([BASH, str(INSTALL)], capture_output=True, text=True,
                                 env=self.env, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.home/'.claude/skills/agent-shield/SKILL.md').is_file())
@@ -133,12 +135,12 @@ class GuardTests(Base):
         self.assertTrue((self.home/'.claude/skills/agent-shield/scripts/guard.sh').is_file())
         self.assertFalse((self.home/'.claude/skills/agent-shield/tests').exists())
         self.assertFalse((self.home/'.claude/skills/agent-shield/.git').exists())
-        replaced = subprocess.run(['bash', str(INSTALL), '--replace'], capture_output=True, text=True,
+        replaced = subprocess.run([BASH, str(INSTALL), '--replace'], capture_output=True, text=True,
                                   env=self.env, timeout=20)
         self.assertEqual(replaced.returncode, 0, replaced.stderr)
         self.assertEqual(sorted(p.name for p in (self.home/'.claude/skills').iterdir()), ['agent-shield'])
         self.assertEqual(len(list((self.home/'.agent-shield-backups').iterdir())), 2)
-        self.assertNotEqual(subprocess.run(['bash', str(INSTALL)], capture_output=True,
+        self.assertNotEqual(subprocess.run([BASH, str(INSTALL)], capture_output=True,
                                        env=self.env, timeout=20).returncode, 0)
 
 class TrustedSourceTests(Base):

@@ -1,0 +1,14 @@
+# Keeps the commit-pinned GitHub Actions up to date. Agent Shield has no
+# package dependencies of its own; SkillSpector and Reflex are pinned by hand
+# in scripts/pins.sh after review.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
