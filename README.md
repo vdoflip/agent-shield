@@ -207,14 +207,14 @@ Every push and pull request runs free GitHub Actions (public repo, no paid featu
 | `ci.yml` → ShellCheck | Bugs and unsafe patterns in `install.sh` and `scripts/*.sh` | Any warning |
 | `ci.yml` → zizmor | Security problems in the workflows themselves (injection, over-broad permissions, unpinned actions) | Any finding at the default level |
 | `codeql.yml` | GitHub CodeQL `security-extended` queries for the Python tests and the workflow files (CodeQL cannot analyse shell; ShellCheck covers that) | — (results only) |
-| `skillspector.yml` | Installs the pinned SkillSpector with this repo's own `setup-dependencies.sh` (so the pinned install is tested too), scans Agent Shield, uploads all findings, then runs `guard.sh scan` on itself | Scanner errors, or hard findings: CRITICAL, malware/webshell/cryptominer, known-vulnerable dependency |
+| `skillspector.yml` | Installs the pinned SkillSpector with this repo's own `setup-dependencies.sh` (so the pinned install is tested too), installs Agent Shield with `install.sh`, scans that installed copy (what users get), uploads all findings, then runs `guard.sh scan` on it | Scanner errors, or hard findings: CRITICAL, malware/webshell/cryptominer, known-vulnerable dependency |
 | `scorecard.yml` | [OpenSSF Scorecard](https://securityscorecards.dev): supply-chain practices such as pinned dependencies, token permissions, branch protection | — (score and results only) |
 | `dependabot.yml` | Weekly updates for the commit-pinned actions, with a 7-day cooldown | — |
 | CodeRabbit (GitHub App, `.coderabbit.yaml`) | AI review of every pull request, with extra instructions for the security-critical scripts | — (review comments only) |
 
 All actions are pinned to full commit SHAs, and every job starts with no token permissions and gets only what it needs. GitHub secret scanning and push protection are enabled on the repository.
 
-The SkillSpector self-scan reports a high risk score, mostly from the fake scanner in the tests and example commands in this README. Those are listed in Code scanning for anyone to review; only the hard findings above fail the build.
+The SkillSpector self-scan reports a high risk score, mostly from example commands and config paths mentioned in this README and `SKILL.md`. Those are listed in Code scanning for anyone to review; only the hard findings above fail the build.
 
 ## Notes
 
