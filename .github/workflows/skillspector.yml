@@ -1,0 +1,57 @@
+name: SkillSpector self-scan
+
+# Scans Agent Shield with the same pinned SkillSpector users install, using the
+# repo's own setup script (so this also tests the pinned, lockfile-based install).
+# Findings appear under Security > Code scanning. The build fails only on the
+# hard findings guard.sh blocks for trusted sources: CRITICAL, malware/webshell/
+# cryptominer YARA matches, or a known HIGH/CRITICAL dependency vulnerability.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 4 * * 1"
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload SkillSpector SARIF to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: agent-shield
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - name: Install pinned SkillSpector
+        run: bash agent-shield/scripts/setup-dependencies.sh --apply skillspector
+      # Scan exactly what users get: the copy install.sh puts in ~/.claude/skills
+      # (no .git, tests, or workflows). SARIF paths are relative, so they map to the repo.
+      - name: Install Agent Shield as users do
+        run: bash agent-shield/install.sh
+      - name: Scan installed copy to SARIF (informational)
+        run: |
+          status=0
+          "$HOME/.local/bin/skillspector" scan "$HOME/.claude/skills/agent-shield" --no-llm \
+            --format sarif --output skillspector.sarif || status=$?
+          echo "SkillSpector exit code: $status (1 = high score or incomplete; 2 = error)"
+          [ "$status" -le 1 ]
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        if: always() && hashFiles('skillspector.sarif') != ''
+        with:
+          sarif_file: skillspector.sarif
+          category: skillspector
+          checkout_path: ${{ github.workspace }}/agent-shield
+      - name: Policy gate (hard findings only)
+        run: bash agent-shield/scripts/guard.sh scan "$HOME/.claude/skills/agent-shield"

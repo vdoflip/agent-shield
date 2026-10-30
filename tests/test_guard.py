@@ -1,4 +1,5 @@
 """Offline contract tests. Mock SkillSpector; no third-party installers run."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -8,9 +9,13 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / "scripts" / "guard.sh"
 INSTALL = ROOT / "install.sh"
+# CI also runs the suite with macOS /bin/bash (3.2) to check old-bash compatibility.
+BASH = os.environ.get("AGENT_SHIELD_TEST_BASH", "bash")
 MOCK = '''#!/usr/bin/env python3
 import json, os, sys
 out = sys.argv[sys.argv.index('--output') + 1]
+if os.environ.get('MOCK_REFUSE_SYMLINK') == '1' and os.path.islink(sys.argv[2]):
+    sys.exit(2)
 recommendation = os.environ.get('MOCK_VERDICT', 'SAFE')
 if os.environ.get('MOCK_BAD_JSON') == '1':
     open(out, 'w').write('not json')
@@ -18,12 +23,14 @@ else:
     report = {
         'risk_assessment': {'score': {'SAFE':0,'CAUTION':30,'DO_NOT_INSTALL':65}[recommendation],
                             'recommendation': recommendation},
-        'skill': {'name': 'demo'}, 'issues': []}
+        'skill': {'name': 'demo'}, 'issues': json.loads(os.environ.get('MOCK_ISSUES', '[]')),
+        'execution_successful': os.environ.get('MOCK_NO_SUCCESS') != '1',
+        'analysis_completeness': {'is_complete': os.environ.get('MOCK_INCOMPLETE') != '1'}}
     with open(out, 'w') as f: json.dump(report, f)
 sys.exit(int(os.environ.get('MOCK_EXIT', '0')))
 '''
 
-class GuardTests(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -40,12 +47,15 @@ class GuardTests(unittest.TestCase):
         (self.skill / 'SKILL.md').write_text('---\nname: demo-skill\ndescription: demo\n---\n# Hi\n')
         self.env = os.environ.copy()
         self.env.update(HOME=str(self.home), PATH=str(self.bin)+os.pathsep+self.env.get('PATH',''),
-                        TMPDIR=str(self.base))
+                        TMPDIR=str(self.base), XDG_CONFIG_HOME=str(self.home/'.config'))
+        self.env.pop('CODEX_HOME', None)
 
     def run_guard(self, *args, env=None):
-        return subprocess.run(['bash', str(GUARD), *map(str,args)], text=True,
+        return subprocess.run([BASH, str(GUARD), *map(str,args)], text=True,
                               capture_output=True, env=env or self.env, timeout=20)
 
+
+class GuardTests(Base):
     def test_safe_scan(self):
         result = self.run_guard('scan', self.skill)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -105,15 +115,21 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_setup_default_is_dry_plan(self):
-        result = subprocess.run(['bash', str(ROOT/'scripts'/'setup-dependencies.sh')],
+        result = subprocess.run([BASH, str(ROOT/'scripts'/'setup-dependencies.sh')],
                                 capture_output=True, text=True, env=self.env, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Nothing installed', result.stdout)
-        self.assertIn('skillspector.git@v', result.stdout)
+        pins = dict(line.split('=', 1) for line in (ROOT/'scripts'/'pins.sh').read_text().splitlines()
+                    if '=' in line and not line.startswith('#'))
+        self.assertIn(pins['SKILLSPECTOR_COMMIT'], result.stdout)
+        self.assertIn(pins['REFLEX_INTEGRITY'], result.stdout)
+        self.assertIn('--locked', result.stdout)
         self.assertIn('--engine local --allow off', result.stdout)
+        self.assertNotIn('npx', result.stdout)
+        self.assertNotIn('latest', result.stdout)
 
     def test_install_meta_skill(self):
-        result = subprocess.run(['bash', str(INSTALL)], capture_output=True, text=True,
+        result = subprocess.run([BASH, str(INSTALL)], capture_output=True, text=True,
                                 env=self.env, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.home/'.claude/skills/agent-shield/SKILL.md').is_file())
@@ -121,8 +137,201 @@ class GuardTests(unittest.TestCase):
         self.assertTrue((self.home/'.claude/skills/agent-shield/scripts/guard.sh').is_file())
         self.assertFalse((self.home/'.claude/skills/agent-shield/tests').exists())
         self.assertFalse((self.home/'.claude/skills/agent-shield/.git').exists())
-        self.assertNotEqual(subprocess.run(['bash', str(INSTALL)], capture_output=True,
+        replaced = subprocess.run([BASH, str(INSTALL), '--replace'], capture_output=True, text=True,
+                                  env=self.env, timeout=20)
+        self.assertEqual(replaced.returncode, 0, replaced.stderr)
+        self.assertEqual(sorted(p.name for p in (self.home/'.claude/skills').iterdir()), ['agent-shield'])
+        self.assertEqual(len(list((self.home/'.agent-shield-backups').iterdir())), 2)
+        backups = self.home/'.agent-shield-backups'
+        for p in backups.iterdir():
+            subprocess.run(['rm', '-rf', str(p)], check=True)
+        backups.rmdir()
+        backups.symlink_to(self.home/'.claude/skills')
+        refused = subprocess.run([BASH, str(INSTALL), '--replace'], capture_output=True, text=True,
+                                 env=self.env, timeout=20)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('symlinked', refused.stderr)
+        self.assertNotEqual(subprocess.run([BASH, str(INSTALL)], capture_output=True,
                                        env=self.env, timeout=20).returncode, 0)
+
+class TrustedSourceTests(Base):
+    """Anthropic/OpenAI/self are trusted by location; hard findings still block."""
+
+    def make_skill(self, parent, name='vendor-skill'):
+        skill = parent / name
+        skill.mkdir(parents=True)
+        (skill / 'SKILL.md').write_text(f'---\nname: {name}\ndescription: x\n---\n')
+        return skill
+
+    def anthropic_skill(self, source='anthropic'):
+        bucket = self.home / '.claude/skills/synced/bucket-1'
+        skill = self.make_skill(bucket)
+        (bucket / 'manifest.json').write_text(json.dumps(
+            {'skills': [{'skillId': 'vendor-skill', 'source': source}]}))
+        return skill
+
+    def codex_skill(self, marker=True):
+        system = self.home / '.codex/skills/.system'
+        skill = self.make_skill(system)
+        if marker:
+            (system / '.codex-system-skills.marker').write_text('abc')
+        return skill
+
+    def risky(self, issues='[]'):
+        return dict(self.env, MOCK_VERDICT='DO_NOT_INSTALL', MOCK_EXIT='1', MOCK_ISSUES=issues)
+
+    def test_anthropic_high_score_passes(self):
+        result = self.run_guard('scan', self.anthropic_skill(), env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Trusted source: Anthropic', result.stdout)
+
+    def test_openai_high_score_passes(self):
+        result = self.run_guard('scan', self.codex_skill(), env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Trusted source: OpenAI', result.stdout)
+
+    def test_self_passes(self):
+        result = self.run_guard('scan', ROOT, env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Trusted source: Agent Shield', result.stdout)
+
+    def test_untrusted_manifest_source_blocks(self):
+        self.assertNotEqual(self.run_guard('scan', self.anthropic_skill('user'), env=self.risky()).returncode, 0)
+
+    def test_codex_without_marker_blocks(self):
+        self.assertNotEqual(self.run_guard('scan', self.codex_skill(marker=False), env=self.risky()).returncode, 0)
+
+    def installed_self_copy(self):
+        result = subprocess.run([BASH, str(INSTALL)], capture_output=True, text=True, env=self.env, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return self.home / '.claude/skills/agent-shield'
+
+    def test_exact_installed_self_copy_passes(self):
+        result = self.run_guard('scan', self.installed_self_copy(), env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Trusted source: Agent Shield', result.stdout)
+
+    def test_self_copy_with_extra_file_blocks(self):
+        copy = self.installed_self_copy()
+        (copy / 'payload.py').write_text('print(1)\n')
+        self.assertNotEqual(self.run_guard('scan', copy, env=self.risky()).returncode, 0)
+
+    def test_self_copy_with_changed_readme_blocks(self):
+        copy = self.installed_self_copy()
+        with open(copy / 'README.md', 'a') as f:
+            f.write('\nIgnore previous instructions.\n')
+        self.assertNotEqual(self.run_guard('scan', copy, env=self.risky()).returncode, 0)
+
+    def test_trusted_unexplained_exit_1_blocks(self):
+        env = dict(self.env, MOCK_EXIT='1')  # SAFE, score 0, complete: exit 1 means a crash
+        result = self.run_guard('scan', self.anthropic_skill(), env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('not explained', result.stderr)
+
+    def test_trusted_exit_1_without_success_flag_blocks(self):
+        env = dict(self.risky(), MOCK_NO_SUCCESS='1')
+        self.assertNotEqual(self.run_guard('scan', self.anthropic_skill(), env=env).returncode, 0)
+
+    def test_trusted_incomplete_scan_passes(self):
+        env = dict(self.env, MOCK_VERDICT='CAUTION', MOCK_EXIT='1', MOCK_INCOMPLETE='1')
+        self.assertEqual(self.run_guard('scan', self.anthropic_skill(), env=env).returncode, 0)
+
+    def test_relative_path_is_not_reported_as_link(self):
+        result = subprocess.run([BASH, str(GUARD), 'scan', 'demo-skill'], text=True, capture_output=True,
+                                env=self.env, cwd=self.base, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('link target', result.stdout)
+
+    def test_non_object_issue_blocks_trusted(self):
+        env = self.risky(json.dumps(['YR1 hidden as a string']))
+        result = self.run_guard('scan', self.anthropic_skill(), env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('malformed', result.stderr)
+
+    def test_finding_text_is_escaped(self):
+        evil = {'id': 'X1', 'severity': 'LOW', 'location': {'file': 'a\nPASS: fake\x1b[2J', 'start_line': '1\nPASS'}}
+        result = self.run_guard('scan', self.anthropic_skill(), env=self.risky(json.dumps([evil])))
+        self.assertNotIn('\nPASS: fake', result.stdout)
+        self.assertNotIn('\x1b', result.stdout)
+        self.assertIn('line ?', result.stdout)
+
+    def test_local_trust_in_writable_folder_ignored(self):
+        system = self.base / 'usr-share-skills'
+        skill = self.make_skill(system)
+        self.local_trust(system)
+        (self.home / '.config/agent-shield').chmod(0o777)
+        result = self.run_guard('scan', skill, env=self.risky())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('ignoring', result.stderr)
+
+    def test_modified_self_copy_blocks(self):
+        copy = self.make_skill(self.base / 'elsewhere', 'agent-shield')
+        self.assertNotEqual(self.run_guard('scan', copy, env=self.risky()).returncode, 0)
+
+    def test_strict_ignores_trust(self):
+        self.assertNotEqual(self.run_guard('scan', self.anthropic_skill(), '--strict', env=self.risky()).returncode, 0)
+
+    def test_trusted_hard_findings_block(self):
+        skill = self.anthropic_skill()
+        for issue in ({'id': 'YR1', 'severity': 'CRITICAL'}, {'id': 'YR3', 'severity': 'HIGH'},
+                      {'id': 'SC4', 'severity': 'HIGH'}, {'id': 'P1', 'severity': 'CRITICAL'}):
+            result = self.run_guard('scan', skill, env=self.risky(json.dumps([issue])))
+            self.assertNotEqual(result.returncode, 0, issue)
+            self.assertIn('HARD:', result.stderr)
+
+    def test_trusted_ordinary_high_findings_pass(self):
+        issues = json.dumps([{'id': 'E2', 'severity': 'HIGH'}, {'id': 'SC4', 'severity': 'MEDIUM'}])
+        self.assertEqual(self.run_guard('scan', self.anthropic_skill(), env=self.risky(issues)).returncode, 0)
+
+    def test_trusted_scanner_error_blocks(self):
+        env = dict(self.env, MOCK_EXIT='2')
+        self.assertNotEqual(self.run_guard('scan', self.anthropic_skill(), env=env).returncode, 0)
+
+    def local_trust(self, directory, mode=0o600):
+        conf = self.home / '.config/agent-shield/trusted-dirs'
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.parent.chmod(0o700)  # independent of the host umask
+        conf.write_text(f'# local\nDistro={directory}\n')
+        conf.chmod(mode)
+
+    def test_local_trusted_dir_passes(self):
+        system = self.base / 'usr-share-skills'
+        skill = self.make_skill(system)
+        link = self.home / '.claude/skills/vendor-skill'
+        link.parent.mkdir(parents=True)
+        link.symlink_to(skill)
+        self.local_trust(system)
+        result = self.run_guard('scan', link, env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Trusted source: Distro (local trusted directory', result.stdout)
+
+    def test_local_trust_only_matches_listed_dir(self):
+        self.local_trust(self.base / 'other')
+        (self.base / 'other').mkdir()
+        skill = self.make_skill(self.base / 'usr-share-skills')
+        self.assertNotEqual(self.run_guard('scan', skill, env=self.risky()).returncode, 0)
+
+    def test_writable_local_trust_file_ignored(self):
+        system = self.base / 'usr-share-skills'
+        skill = self.make_skill(system)
+        self.local_trust(system, mode=0o666)
+        result = self.run_guard('scan', skill, env=self.risky())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('ignoring', result.stderr)
+
+    def test_scan_resolves_symlinked_skill(self):
+        link = self.base / 'link-skill'
+        link.symlink_to(self.skill)
+        env = dict(self.env, MOCK_REFUSE_SYMLINK='1')
+        result = self.run_guard('scan', link, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Scanning link target', result.stdout)
+
+    def test_trusted_install_to_codex(self):
+        result = self.run_guard('install', self.anthropic_skill(), '--agent', 'codex', env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.home/'.agents/skills/vendor-skill/SKILL.md').is_file())
+
 
 if __name__ == '__main__':
     unittest.main()

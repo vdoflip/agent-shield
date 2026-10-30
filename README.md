@@ -1,5 +1,7 @@
 # Agent Shield — meta-skill for Claude Code and Codex (macOS & Linux)
 
+[![CI](https://github.com/vdoflip/agent-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/ci.yml) [![CodeQL](https://github.com/vdoflip/agent-shield/actions/workflows/codeql.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/codeql.yml) [![SkillSpector self-scan](https://github.com/vdoflip/agent-shield/actions/workflows/skillspector.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/skillspector.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/vdoflip/agent-shield/badge)](https://securityscorecards.dev/viewer/?uri=github.com/vdoflip/agent-shield) [![CodeRabbit Reviews](https://img.shields.io/coderabbit/prs/github/vdoflip/agent-shield?label=CodeRabbit%20Reviews)](https://coderabbit.ai) [![License: MIT](https://img.shields.io/github/license/vdoflip/agent-shield)](LICENSE)
+
 A portable `SKILL.md` + local shell helpers that coordinate:
 
 1. **Reflex** (https://github.com/ursuciprian/reflex): an independent runtime hook-based gate for tool calls and prompt-injection-bearing content.
@@ -13,7 +15,7 @@ Supported platforms: macOS and Linux (including WSL). Native Windows is not supp
 
 **Agent Shield reduces risk; it does not make an agent safe.** It is provided as-is, with no warranty. A pass from either tool means "no known bad pattern was found", not "this is safe". Keep your agent's sandbox, permission prompts, least-privilege credentials, and network controls switched on. Agent Shield is meant to sit on top of them, not replace them.
 
-Checked against SkillSpector `v2.13.2` and Reflex `0.18.2` (October 2026); `setup-dependencies.sh` pins those versions. Newer upstream releases may behave differently.
+Checked against SkillSpector `v2.13.2` and Reflex `0.18.2` (October 2026); `setup-dependencies.sh` installs exactly those (see [Pinned versions](#pinned-versions)). Newer upstream releases may behave differently.
 
 ### What it covers
 
@@ -21,6 +23,7 @@ Checked against SkillSpector `v2.13.2` and Reflex `0.18.2` (October 2026); `setu
 |---|---|---|
 | Installing a skill **through `guard.sh install`** | Copies the skill to a private staging folder, rejects symlinks, special files, and a `name:` that differs from the folder, scans that exact copy with SkillSpector, and installs only that copy. Never overwrites an existing skill. | Blocking. Fails closed on scanner errors, bad/missing reports, and incomplete analysis. |
 | Skill scan verdicts | `SAFE` (score 0–20) passes; `CAUTION` (21–50) needs `--allow-caution` from a human; `DO_NOT_INSTALL` (51+) always blocks. A self-shipped suppression baseline in the skill is ignored. | Static analysis only: pattern rules, YARA rules, Python AST and taint checks, dependency CVE lookups. |
+| Trusted vendors (Anthropic, OpenAI) and Agent Shield itself | Recognised by install location (see [Trusted sources](#trusted-sources)). Score and incomplete analysis don't block; CRITICAL findings, malware/webshell/cryptominer matches, and dependencies with known HIGH/CRITICAL vulnerabilities still do. | Blocking for those hard findings only. Scanner errors still block. |
 | Commands the agent runs (Claude Code) | Reflex checks `Bash`, `Task`/`Agent`, `Edit`/`Write`/`MultiEdit`/`NotebookEdit`, and MCP tool calls **before** they run, and can ask you or deny. | Blocking in `enforce` mode. If Reflex itself errors, it asks you. |
 | Commands the agent runs (Codex) | Same gate on `Bash`, `spawn_agent`, `apply_patch`, MCP tools. | Blocking once you trust the hooks in `/hooks`. |
 | Prompt injection in tool results (Claude Code) | After `WebFetch`, `WebSearch`, `Read` of files outside your project, `Bash` that fetches remote content, and MCP results, Reflex scans the text. **Warn** adds a note for the model; **block** cuts the offending text out of the result. Marks the session as tainted, so later commands get stricter checks. | Pattern-based (local engine). Runs after the tool, see below. |
@@ -36,11 +39,11 @@ Checked against SkillSpector `v2.13.2` and Reflex `0.18.2` (October 2026); `setu
 - **Malicious behaviour that looks normal.** Static analysis has false negatives: obfuscated code, logic split across files, code downloaded at run time, or harmful instructions phrased harmlessly can pass. It also has false positives.
 - **Prompt injection, fully.** The injection guard is pattern-based. New or subtle wording can get through. It runs *after* the tool returns, so with a warn (or with the Claude Code plugin install, even a block) the text still reaches the model, with a note attached.
 - **Tools Reflex does not hook.** In Claude Code: `Read` inside your project, `Glob`, `Grep`, `Skill`, `WebFetch`/`WebSearch` *requests* (only their results are scanned), and other built-in tools are not gated before running. Codex's hosted web search is not hooked at all. Claude Desktop, Cursor, and other hosts without hooks get advisory checks only (via `reflex mcp`).
-- **Hook timeouts or a broken install.** If a Reflex hook times out (10–15 s), or `node` or the Reflex files are missing, Claude Code and Codex **let the action run**. `guard.sh status` and `reflex doctor` help you notice this; they do not prevent it.
+- **Hook timeouts or a broken install.** If a Reflex hook times out (10–15 s), or `node` or the Reflex files are missing (Reflex records the absolute path of the `node` that ran setup, so removing that Node version, for example with a version manager, breaks the hooks; re-run the setup after changing Node), Claude Code and Codex **let the action run**. `guard.sh status` and `reflex doctor` help you notice this; they do not prevent it.
 - **Shadow mode.** If Reflex is in `shadow` mode (its default when set up without `--mode enforce`), it only logs. `setup-dependencies.sh` uses `enforce`.
-- **A determined local attacker.** A process running as your user can edit hooks, settings, the staging folder during a scan, or the installed skill afterwards. Reflex adds permission rules that ask before editing its own files, but that is not tamper-proof.
-- **Privacy.** With `--no-llm`, skill contents are not sent to an LLM, but SkillSpector sends dependency names and versions to OSV.dev. Reflex's local engine makes no network calls. The optional `jev` engine or `autonomous` profile *do* send commands and text to an external model; this setup turns them off explicitly.
-- **Supply chain of the tools themselves.** Reflex and SkillSpector are third-party code that runs on your machine with your permissions. The pinned versions reduce, but do not remove, that risk. Review them before `--apply`.
+- **A determined local attacker.** A process running as your user can edit hooks, settings, the staging folder during a scan, or the installed skill afterwards. It could also drop a skill into a trusted location (the claude.ai sync folder or `~/.codex/skills/.system`) to get the relaxed policy. Reflex adds permission rules that ask before editing its own files, but that is not tamper-proof.
+- **Privacy.** With `--no-llm`, skill contents are not sent to an LLM, but SkillSpector sends dependency names and versions to OSV.dev. Reflex's local engine makes no network calls. Reflex's `jev` engine, its `autonomous` profile, and its "System 2" judge *do* send commands and text to an external model. The judge is **on by default** in Reflex's normal profile whenever a `claude` or `codex` CLI is installed; this setup turns all three off explicitly (`--engine local --judge off`).
+- **Supply chain of the tools themselves.** Reflex and SkillSpector are third-party code that runs on your machine with your permissions. Pinning to an exact commit, lockfile, and tarball hash means you get the code that was reviewed, not whatever is newest, but it does not make that code correct. Review it before `--apply`.
 - **Native Windows.**
 
 ## Prerequisites
@@ -48,10 +51,11 @@ Checked against SkillSpector `v2.13.2` and Reflex `0.18.2` (October 2026); `setu
 | Tool | Needed for | macOS | Linux |
 |---|---|---|---|
 | `bash`, `python3` (any 3.x) | `guard.sh`, JSON validation | preinstalled / `brew install python` | distro package (`python3`) |
-| `node` 18+ and `npx` | Reflex | `brew install node` | distro package, `mise`, `nvm`, or nodejs.org |
+| `node` 18+ and `npm` | Reflex | `brew install node` | distro package, `mise`, `nvm`, or nodejs.org |
+| `git` | Fetching the pinned SkillSpector commit | preinstalled with Xcode tools / `brew install git` | distro package |
 | `uv` | SkillSpector (it fetches its own Python 3.12+ if needed) | `brew install uv` | `pacman -S uv`, `pipx install uv`, or `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 
-Both `uv tool install` and Reflex put binaries in `~/.local/bin`. Make sure it is on `PATH` (`uv tool update-shell` adds it).
+The setup links `skillspector` and `reflex` into `~/.local/bin`. Make sure it is on `PATH`. Don't install SkillSpector yourself with `uv tool install`; the setup installs the pinned version and refuses to overwrite another one.
 
 ## Installation
 
@@ -86,7 +90,20 @@ Both `uv tool install` and Reflex put binaries in `~/.local/bin`. Make sure it i
    bash ~/.claude/skills/agent-shield/scripts/setup-dependencies.sh --apply
    ```
 
-   This uses the publishers' documented package commands, pinned to SkillSpector `v2.13.2` and Reflex `0.18.2` (override with `SKILLSPECTOR_REF=` / `REFLEX_VERSION=` after reviewing a newer release). It configures Reflex in **enforce** mode with the local engine and no auto-allow (`--engine local --allow off`) for Claude Code and Codex. Third-party install commands run only with `--apply`.
+   This installs the exact versions in `scripts/pins.sh` (see [Pinned versions](#pinned-versions)) and configures Reflex for Claude Code and Codex in **enforce** mode with the local engine, no auto-allow, and no LLM judge (`--engine local --allow off --judge off`). Third-party install commands run only with `--apply`. `--apply skillspector` or `--apply reflex` installs just one of them.
+
+   Requires `git`, `uv`, `node` 18+, `npm`, and `python3`. If you already have a `skillspector` from `uv tool install`, remove it first (`uv tool uninstall skillspector`); the script will not overwrite it.
+
+### Pinned versions
+
+`scripts/pins.sh` is the single source of truth. Nothing is resolved to "latest":
+
+| Tool | What is pinned | How it is enforced |
+|---|---|---|
+| SkillSpector `2.13.2` | Git commit `abd82935…` (tag `v2.13.2`) and its `uv.lock` (158 packages) | Fetches that commit by hash and checks `HEAD`; `uv sync --locked` refuses to re-resolve and verifies every package's sha256. Its build tool (`hatchling`, unversioned upstream) comes from `scripts/skillspector-build.txt` with required hashes, and SkillSpector is then built offline (`--no-index --no-build-isolation`). Installed under `~/.local/share/agent-shield/` and linked to `~/.local/bin/skillspector`. |
+| Reflex `0.18.2` | npm tarball sha512 (built from git commit `b9ccab1`, tag `v0.18.2`) | Downloads with `npm pack`, checks the sha512 and version, and runs setup from that verified copy, never through `npx`. Reflex has no npm dependencies and no install scripts. |
+
+`guard.sh status` shows the installed versions next to the pinned ones. To upgrade, review the new release and update every value in `pins.sh` together.
 
 5. Restart Codex CLI, run `/hooks`, review, and trust the Reflex entries. Claude Code picks up new skills without a restart, but restart it once so the new Reflex hooks load; `/hooks` shows them. Then verify:
 
@@ -117,13 +134,38 @@ reflex scan ./untrusted-text.txt
 bash ~/.claude/skills/agent-shield/scripts/guard.sh install ./reviewed-skill --agent claude --allow-caution
 ```
 
+### Trusted sources
+
+Most vendor-shipped skills trip SkillSpector's patterns: Office XML schemas with a byte-order mark look like "hidden instructions", `os.environ.copy()` looks like credential harvesting, and paths a skill creates at runtime count as "incomplete analysis". To keep these usable, `guard.sh` trusts three sources, **by where the skill is installed, never by what its files claim**:
+
+| Source | Recognised when |
+|---|---|
+| Anthropic | The skill is in `~/.claude/skills/synced/<bucket>/` (claude.ai account sync) and that folder's `manifest.json` lists it with `source` `anthropic` or `anthropic-example`. |
+| OpenAI | The skill is in `${CODEX_HOME:-~/.codex}/skills/.system/` next to Codex's `.codex-system-skills.marker`. |
+| Agent Shield | The folder is the running copy itself, or an exact installed copy: only `SKILL.md`, `README.md`, `LICENSE`, and `scripts/`, all regular files, byte-identical to the running copy, nothing extra. |
+
+For a trusted source, the risk score and incomplete analysis do not block. These still block:
+
+- any finding with severity `CRITICAL`
+- YARA malware (`YR1`), webshell (`YR2`), or cryptominer (`YR3`) matches
+- dependencies with a known `HIGH` or `CRITICAL` vulnerability (`SC4`)
+- scanner errors, failed runs, or malformed reports
+
+The output names the trusted source, and all findings are still listed. Use `--strict` to ignore the trusted list, for example for an audit. To trust another source for everyone, edit `trusted_source()` in `scripts/guard.sh`.
+
+**Local trusted directories.** To trust a source on your machine only, add `LABEL=DIRECTORY` lines to `~/.config/agent-shield/trusted-dirs` (or under `$XDG_CONFIG_HOME`). Skills directly inside `DIRECTORY` (after resolving symlinks) get the trusted policy. The file is ignored unless you own it and its folder, and neither is writable by group or others (`chmod 700 ~/.config/agent-shield`, `chmod 600` the file). Prefer directories only root can write, such as skills shipped by a signed distro package. Find the owning package with `pacman -Qo`, `dpkg -S`, or `rpm -qf`, then add for example:
+
+```
+MyDistro=/usr/share/my-distro/agents/skills
+```
+
 `--allow-caution` never overrides a `DO_NOT_INSTALL` verdict, a scanner error, or incomplete analysis. It is an **explicit** exception for a human-reviewed `CAUTION` result. Do not let an autonomous agent choose this option on its own.
 
 The wrapper only installs **local directories**, not remote URLs or archives. Download/inspect and unpack external skill sources outside trusted locations first, then scan their directory. Never run their setup scripts before scanning. Candidates containing symlinks or special files (FIFOs, devices, sockets) are rejected.
 
 ## Token cost
 
-Agent Shield itself makes **no LLM calls**: SkillSpector runs with `--no-llm` and Reflex's default `local` engine uses rules, not a model. The only cost is the text that lands in your agent's context. Rough numbers (≈4 characters per token):
+Agent Shield itself makes **no LLM calls**: SkillSpector runs with `--no-llm`, and Reflex is set up with the rules-only `local` engine and its LLM judge turned off. The only cost is the text that lands in your agent's context. Rough numbers (≈4 characters per token):
 
 | When | What enters context | Approx. tokens |
 |---|---|---|
@@ -131,7 +173,7 @@ Agent Shield itself makes **no LLM calls**: SkillSpector runs with `--no-llm` an
 | Skill invoked | Full `SKILL.md` body | ~1,100 |
 | `guard.sh scan` / `install` | Command + verdict line + up to 10 findings | 100–400 per call |
 | `guard.sh status` | `reflex doctor` + `reflex status` output | ~300–1,500 (depends on Reflex version) |
-| Agent reads `README.md` (only on install/limitation questions) | This file | ~3,200 |
+| Agent reads `README.md` (only on install/limitation questions) | This file | ~5,200 |
 | Reflex hooks firing (enforce mode) | Only block/warning messages; silent when allowed | 0 normally, ~50–300 per block |
 
 Typical totals, including the agent's own reasoning and tool-call overhead:
@@ -142,7 +184,7 @@ Typical totals, including the agent's own reasoning and tool-call overhead:
 
 Once loaded, the skill body stays in context for the rest of the session and is re-sent each turn, usually as cheap cached input. After auto-compaction, Claude Code re-attaches it (up to 5k tokens per skill). Multiply by your model's per-token price for a dollar figure.
 
-Reflex setups that are **not** the default do add separate LLM cost: the `jev` engine (`--engine jev`) sends uncovered commands to a hosted model, and the `autonomous` profile calls `claude`/`codex exec` or the Anthropic API. If you also run SkillSpector without `--no-llm` outside this wrapper, that uses an LLM as well.
+Other Reflex setups do add separate LLM cost: the `jev` engine sends uncovered commands to a hosted model, and the System 2 judge (on by default in Reflex's own `setup` when a `claude`/`codex` CLI is found, with a default budget of 300 calls or $5 a day) calls `claude -p`/`codex exec` or the Anthropic API. `setup-dependencies.sh` disables both. If you also run SkillSpector without `--no-llm` outside this wrapper, that uses an LLM as well.
 
 ## Tests
 
@@ -155,11 +197,40 @@ bash -n install.sh scripts/*.sh
 
 Tests use fake scanner responses and temporary home directories; they do not install security products. They run on macOS and Linux.
 
+## How Agent Shield itself is checked
+
+Every push and pull request runs free GitHub Actions (public repo, no paid features). Results of the scanners appear under **Security → Code scanning**.
+
+| Workflow | What it checks | Fails the build on |
+|---|---|---|
+| `ci.yml` → Tests | The unit tests on Ubuntu and macOS, plus again with macOS's built-in bash 3.2 | Any test failure |
+| `ci.yml` → ShellCheck | Bugs and unsafe patterns in `install.sh` and `scripts/*.sh` | Any warning |
+| `ci.yml` → zizmor | Security problems in the workflows themselves (injection, over-broad permissions, unpinned actions) | Any finding at the default level |
+| `codeql.yml` | GitHub CodeQL `security-extended` queries for the Python tests and the workflow files (CodeQL cannot analyse shell; ShellCheck covers that) | — (results only) |
+| `skillspector.yml` | Installs the pinned SkillSpector with this repo's own `setup-dependencies.sh` (so the pinned install is tested too), installs Agent Shield with `install.sh`, scans that installed copy (what users get), uploads all findings, then runs `guard.sh scan` on it | Scanner errors, or hard findings: CRITICAL, malware/webshell/cryptominer, known-vulnerable dependency |
+| `scorecard.yml` | [OpenSSF Scorecard](https://securityscorecards.dev): supply-chain practices such as pinned dependencies, token permissions, branch protection | — (score and results only) |
+| `dependabot.yml` | Weekly updates for the commit-pinned actions, with a 7-day cooldown | — |
+| CodeRabbit (GitHub App, `.coderabbit.yaml`) | AI review of every pull request, with extra instructions for the security-critical scripts | — (review comments only) |
+
+All actions are pinned to full commit SHAs, and every job starts with no token permissions and gets only what it needs. GitHub secret scanning and push protection are enabled on the repository.
+
+The SkillSpector self-scan reports a high risk score, mostly from example commands and config paths mentioned in this README and `SKILL.md`. Those are listed in Code scanning for anyone to review; only the hard findings above fail the build.
+
 ## Notes
 
 - For mandatory organisation-wide checks, enforce a separate approved installer, permission policy, CI, or endpoint controls; a skill cannot guarantee its own use.
 - `install.sh --replace` makes timestamped backups; no privileged install or `sudo` is required.
 - This distribution does not bundle Reflex or SkillSpector.
+
+## Upstream review notes
+
+Reflex `0.18.2` was reviewed more closely than SkillSpector, since it is a single-maintainer project that sits in every tool call (October 2026):
+
+- The npm tarball matches git tag `v0.18.2` file for file. One extra file, a CI-built `routing/__pycache__/*.pyc`, has bytecode identical to its source and is not loaded (its recorded timestamp does not match).
+- No npm dependencies, no install scripts, no self-update, no `eval`. Setup writes only `~/.local/share/reflex`, `~/.local/bin/reflex`, `~/.config/reflex`, `~/.local/state/reflex`, and the hooks in `~/.claude/settings.json` and `~/.codex/hooks.json` (keeping your other settings). It adds `ask` rules so agents must ask before editing Reflex's own files. It does not touch shell profiles.
+- Network use is limited to: the optional LLM providers (`jev`, judge), a Prometheus push only with `reflex report --push`, decision webhooks only if you configure `notify` yourself, and a localhost health check for the optional Laya engine. With this setup none of them run.
+- A repository's `.reflex/policy.json` can only add checks; anything that loosens them (its fast lane) or sends data (its webhook) needs `reflex trust` from your terminal, bound to the file's hash.
+- The pre-run gate fails closed on its own errors (asks you), but a hook **timeout** lets the action run (agent behaviour, documented upstream).
 
 ## Source references
 
