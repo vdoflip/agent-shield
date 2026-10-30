@@ -248,6 +248,13 @@ class TrustedSourceTests(Base):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('malformed', result.stderr)
 
+    def test_issue_without_id_or_known_severity_blocks(self):
+        skill = self.anthropic_skill()
+        for issue in ({'severity': 'CRITICAL'}, {'id': 'YR1'}, {'id': 'YR1', 'severity': 'critical!'}):
+            result = self.run_guard('scan', skill, env=self.risky(json.dumps([issue])))
+            self.assertNotEqual(result.returncode, 0, issue)
+            self.assertIn('malformed', result.stderr)
+
     def test_finding_text_is_escaped(self):
         evil = {'id': 'X1', 'severity': 'LOW', 'location': {'file': 'a\nPASS: fake\x1b[2J', 'start_line': '1\nPASS'}}
         result = self.run_guard('scan', self.anthropic_skill(), env=self.risky(json.dumps([evil])))
