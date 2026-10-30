@@ -5,15 +5,26 @@ set -euo pipefail
 usage() { cat <<'HELP'
 Usage:
   guard.sh status
-  guard.sh scan PATH [--allow-caution]
-  guard.sh install LOCAL_DIRECTORY [--agent claude|codex|both] [--allow-caution]
+  guard.sh scan PATH [--allow-caution] [--strict]
+  guard.sh install LOCAL_DIRECTORY [--agent claude|codex|both] [--allow-caution] [--strict]
 
 Default: only SAFE scans pass. CAUTION requires explicit --allow-caution,
 DO_NOT_INSTALL and errors always block. Nothing is overwritten.
+
+Trusted sources (decided by install location, never by file contents):
+  Anthropic     skills synced from claude.ai (~/.claude/skills/synced, manifest source anthropic*)
+  OpenAI        Codex built-in system skills (~/.codex/skills/.system)
+  Agent Shield  this tool's own files
+For these, risk score and incomplete analysis do not block. Hard findings still
+block: any CRITICAL finding, malware/webshell/cryptominer YARA matches (YR1-YR3),
+and dependencies with known HIGH/CRITICAL vulnerabilities (SC4). Scanner errors
+always block. --strict ignores the trusted list.
 HELP
 }
 
 die() { printf 'Agent Shield: %s\n' "$*" >&2; exit 1; }
+
+SELF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 # SkillSpector writes reports through no-follow directory handles, so a
 # symlinked TMPDIR (common on macOS and some Linux setups) would fail every scan.
@@ -26,6 +37,43 @@ frontmatter_name() {
        $0 == "---" { exit }
        /^name:/ { sub(/^name:[[:space:]]*/, ""); sub(/[[:space:]]+$/, "");
                   gsub(/^["\047]|["\047]$/, ""); print; exit }' "$1"
+}
+
+real_dir() { (cd "$1" 2>/dev/null && pwd -P); }
+
+# Print "Publisher (where)" when PATH is a trusted install location, else nothing.
+# Trust comes only from where the skill lives and its vendor's own metadata there.
+trusted_source() {
+  local real parent name dir
+  real="$(real_dir "$1")" || return 0
+  parent="$(dirname "$real")"; name="$(basename "$real")"
+
+  # Agent Shield: the same SKILL.md and scripts as the copy running right now.
+  if [[ "$name" == agent-shield && -f "$real/SKILL.md" ]] \
+     && cmp -s "$real/SKILL.md" "$SELF_ROOT/SKILL.md" \
+     && diff -r "$real/scripts" "$SELF_ROOT/scripts" >/dev/null 2>&1; then
+    echo 'Agent Shield (this tool)'; return
+  fi
+
+  # OpenAI: Codex unpacks its built-in skills here and leaves a marker file.
+  dir="$(real_dir "${CODEX_HOME:-$HOME/.codex}/skills/.system")" || dir=''
+  if [[ -n "$dir" && "$parent" == "$dir" && -f "$dir/.codex-system-skills.marker" ]]; then
+    echo 'OpenAI (Codex built-in system skill)'; return
+  fi
+
+  # Anthropic: Claude Code syncs account skills into synced/<bucket>/ with a manifest.
+  dir="$(real_dir "$HOME/.claude/skills/synced")" || dir=''
+  if [[ -n "$dir" && "$(dirname "$parent")" == "$dir" && -f "$parent/manifest.json" ]] \
+     && python3 - "$parent/manifest.json" "$name" 2>/dev/null <<'PY'
+import json, sys
+skills = json.load(open(sys.argv[1], encoding="utf-8")).get("skills", [])
+sys.exit(0 if any(isinstance(s, dict) and s.get("skillId") == sys.argv[2]
+                  and s.get("source") in ("anthropic", "anthropic-example")
+                  for s in skills) else 1)
+PY
+  then
+    echo 'Anthropic (claude.ai account sync)'; return
+  fi
 }
 
 status() {
@@ -46,8 +94,8 @@ status() {
 # Python deliberately validates the stable, documented top-level JSON schema.
 # It does NOT interpret arbitrary content of findings as instructions.
 assess_json() {
-  local report="$1" caution="$2"
-  python3 - "$report" "$caution" <<'PY'
+  local report="$1" caution="$2" trusted="$3"
+  python3 - "$report" "$caution" "$trusted" <<'PY'
 import json, sys
 try:
     with open(sys.argv[1], encoding="utf-8") as stream:
@@ -60,24 +108,43 @@ try:
     issues = report["issues"]
     assert isinstance(issues, list)
     assert isinstance(report["skill"], dict)
+    assert report.get("execution_successful", True) is not False, "scanner reported a failed run"
 except (OSError, ValueError, TypeError, KeyError, AssertionError) as exc:
     print(f"BLOCK: malformed or incomplete scanner JSON: {exc}", file=sys.stderr)
     sys.exit(2)
 
-allow_caution = sys.argv[2] == "true"
-allowed = recommendation == "SAFE" or (allow_caution and recommendation == "CAUTION")
+def where(issue):
+    location = issue.get("location") if isinstance(issue.get("location"), dict) else {}
+    return f'{str(location.get("file", "?"))[:160]} line {location.get("start_line", "?")}'
+
+# Findings that block even a trusted source: plainly malicious or known-vulnerable.
+def hard(issue):
+    rule, severity = str(issue.get("id", "")), str(issue.get("severity", "")).upper()
+    return (severity == "CRITICAL" or rule in ("YR1", "YR2", "YR3")
+            or (rule == "SC4" and severity in ("HIGH", "CRITICAL")))
+
+issues = [i for i in issues if isinstance(i, dict)]
+hard_issues = [i for i in issues if hard(i)]
+allow_caution, trusted = sys.argv[2] == "true", sys.argv[3]
+
 print(f"SkillSpector: risk={score}/100 recommendation={recommendation} findings={len(issues)}")
 for issue in issues[:10]:
-    if not isinstance(issue, dict):
-        continue
-    location = issue.get("location") or {}
-    if not isinstance(location, dict):
-        location = {}
-    print("  -", str(issue.get("id", "?"))[:30], str(issue.get("severity", "?"))[:20],
-          str(location.get("file", "?"))[:160], "line", location.get("start_line", "?"))
+    print("  -", str(issue.get("id", "?"))[:30], str(issue.get("severity", "?"))[:20], where(issue))
 if len(issues) > 10:
     print(f"  ... {len(issues)-10} more findings (review full scanner output manually)")
-if not allowed:
+
+if trusted:
+    print(f"Trusted source: {trusted}. Score and incomplete analysis do not block; hard findings do.")
+    if hard_issues:
+        for issue in hard_issues[:10]:
+            print("  HARD:", str(issue.get("id", "?"))[:30], str(issue.get("severity", "?"))[:20],
+                  where(issue), file=sys.stderr)
+        print("BLOCK: trusted source has critical, malware, or known-vulnerable findings.", file=sys.stderr)
+        sys.exit(1)
+    print("PASS: trusted source with no hard findings; not a guarantee of safety.")
+    sys.exit(0)
+
+if not (recommendation == "SAFE" or (allow_caution and recommendation == "CAUTION")):
     print("BLOCK: policy requires SAFE (or explicitly reviewed CAUTION).", file=sys.stderr)
     sys.exit(1)
 print("PASS: policy permits this scan result; not a guarantee of safety.")
@@ -85,7 +152,7 @@ PY
 }
 
 scan_gate() {
-  local target="$1" caution="$2" report scan_rc parse_rc
+  local target="$1" caution="$2" trusted="$3" report scan_rc parse_rc
   command -v skillspector >/dev/null 2>&1 || die 'skillspector is not installed; refusing to proceed.'
   command -v python3 >/dev/null 2>&1 || die 'python3 is required to validate scanner JSON.'
   report="$(mktemp "$(tmp_root)/agent-shield-report.XXXXXXXX")"
@@ -100,9 +167,14 @@ scan_gate() {
     rm -f -- "$report"
     die "scanner did not produce a report (exit $scan_rc)."
   fi
-  if assess_json "$report" "$caution"; then parse_rc=0; else parse_rc=$?; fi
+  if assess_json "$report" "$caution" "$trusted"; then parse_rc=0; else parse_rc=$?; fi
   rm -f -- "$report"
-  [[ "$scan_rc" == 0 && "$parse_rc" == 0 ]] || die "scan blocked (scanner exit $scan_rc, policy exit $parse_rc)."
+  # SkillSpector exit 1 = risk > 50 or incomplete analysis; 2+ = error.
+  # A trusted source may pass with exit 1; errors never pass.
+  if [[ "$parse_rc" == 0 && ( "$scan_rc" == 0 || ( -n "$trusted" && "$scan_rc" == 1 ) ) ]]; then
+    return 0
+  fi
+  die "scan blocked (scanner exit $scan_rc, policy exit $parse_rc)."
 }
 
 # Arguments are intentionally simple: only local directories may be installed.
@@ -117,10 +189,11 @@ main() {
   [[ "$action" == scan || "$action" == install ]] || { usage >&2; exit 2; }
   [[ $# -ge 1 ]] || { usage >&2; exit 2; }
   local target="$1"; shift
-  local agent=both caution=false
+  local agent=both caution=false strict=false trusted=''
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --allow-caution) caution=true; shift ;;
+      --strict) strict=true; shift ;;
       --agent)
         [[ "$action" == install && $# -ge 2 ]] || { usage >&2; exit 2; }
         agent="$2"; shift 2 ;;
@@ -129,9 +202,10 @@ main() {
   done
   case "$agent" in claude|codex|both) ;; *) die 'agent must be claude, codex, or both';; esac
   [[ -e "$target" ]] || die "input not found: $target"
+  [[ "$strict" == true ]] || trusted="$(trusted_source "$target")"
 
   if [[ "$action" == scan ]]; then
-    scan_gate "$target" "$caution"; return
+    scan_gate "$target" "$caution" "$trusted"; return
   fi
 
   [[ -d "$target" && ! -L "$target" ]] || die 'install requires a regular local directory, not a link, archive, or URL.'
@@ -163,7 +237,8 @@ main() {
   for dest in "${dests[@]}"; do
     [[ ! -e "$dest" && ! -L "$dest" ]] || die "destination already exists; refusing overwrite: $dest"
   done
-  scan_gate "$stage" "$caution"
+  # The staged copy is what gets scanned and installed; trust came from the source location.
+  scan_gate "$stage" "$caution" "$trusted"
 
   for dest in "${dests[@]}"; do
     parent="$(dirname "$dest")"

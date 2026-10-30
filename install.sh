@@ -28,7 +28,9 @@ for dest in "${dests[@]}"; do
     [[ -e "$src/$item" ]] && cp -R "$src/$item" "$staged/"
   done
   if [[ -e "$dest" || -L "$dest" ]]; then
-    backup="$dest.backup.$(date +%Y%m%d-%H%M%S).$$"
+    # Back up outside the skills folder, or the agent would load the backup as a second skill.
+    mkdir -p -- "$HOME/.agent-shield-backups"
+    backup="$HOME/.agent-shield-backups/$(basename "$(dirname "$parent")")-agent-shield.$(date +%Y%m%d-%H%M%S).$$"
     mv -- "$dest" "$backup"
     echo "Backup: $backup"
   fi
