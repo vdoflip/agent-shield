@@ -1,5 +1,7 @@
 # Agent Shield — meta-skill for Claude Code and Codex (macOS & Linux)
 
+[![CI](https://github.com/vdoflip/agent-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/ci.yml) [![CodeQL](https://github.com/vdoflip/agent-shield/actions/workflows/codeql.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/codeql.yml) [![SkillSpector self-scan](https://github.com/vdoflip/agent-shield/actions/workflows/skillspector.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/skillspector.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/vdoflip/agent-shield/badge)](https://securityscorecards.dev/viewer/?uri=github.com/vdoflip/agent-shield)
+
 A portable `SKILL.md` + local shell helpers that coordinate:
 
 1. **Reflex** (https://github.com/ursuciprian/reflex): an independent runtime hook-based gate for tool calls and prompt-injection-bearing content.
@@ -170,7 +172,7 @@ Agent Shield itself makes **no LLM calls**: SkillSpector runs with `--no-llm`, a
 | Skill invoked | Full `SKILL.md` body | ~1,100 |
 | `guard.sh scan` / `install` | Command + verdict line + up to 10 findings | 100–400 per call |
 | `guard.sh status` | `reflex doctor` + `reflex status` output | ~300–1,500 (depends on Reflex version) |
-| Agent reads `README.md` (only on install/limitation questions) | This file | ~4,600 |
+| Agent reads `README.md` (only on install/limitation questions) | This file | ~5,200 |
 | Reflex hooks firing (enforce mode) | Only block/warning messages; silent when allowed | 0 normally, ~50–300 per block |
 
 Typical totals, including the agent's own reasoning and tool-call overhead:
@@ -193,6 +195,24 @@ bash -n install.sh scripts/*.sh
 ```
 
 Tests use fake scanner responses and temporary home directories; they do not install security products. They run on macOS and Linux.
+
+## How Agent Shield itself is checked
+
+Every push and pull request runs free GitHub Actions (public repo, no paid features). Results of the scanners appear under **Security → Code scanning**.
+
+| Workflow | What it checks | Fails the build on |
+|---|---|---|
+| `ci.yml` → Tests | The unit tests on Ubuntu and macOS, plus again with macOS's built-in bash 3.2 | Any test failure |
+| `ci.yml` → ShellCheck | Bugs and unsafe patterns in `install.sh` and `scripts/*.sh` | Any warning |
+| `ci.yml` → zizmor | Security problems in the workflows themselves (injection, over-broad permissions, unpinned actions) | Any finding at the default level |
+| `codeql.yml` | GitHub CodeQL `security-extended` queries for the Python tests and the workflow files (CodeQL cannot analyse shell; ShellCheck covers that) | — (results only) |
+| `skillspector.yml` | Installs the pinned SkillSpector with this repo's own `setup-dependencies.sh` (so the pinned install is tested too), scans Agent Shield, uploads all findings, then runs `guard.sh scan` on itself | Scanner errors, or hard findings: CRITICAL, malware/webshell/cryptominer, known-vulnerable dependency |
+| `scorecard.yml` | [OpenSSF Scorecard](https://securityscorecards.dev): supply-chain practices such as pinned dependencies, token permissions, branch protection | — (score and results only) |
+| `dependabot.yml` | Weekly updates for the commit-pinned actions, with a 7-day cooldown | — |
+
+All actions are pinned to full commit SHAs, and every job starts with no token permissions and gets only what it needs. GitHub secret scanning and push protection are enabled on the repository.
+
+The SkillSpector self-scan reports a high risk score, mostly from the fake scanner in the tests and example commands in this README. Those are listed in Code scanning for anyone to review; only the hard findings above fail the build.
 
 ## Notes
 

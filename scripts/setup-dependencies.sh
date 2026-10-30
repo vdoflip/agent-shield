@@ -13,12 +13,12 @@ HELP
 }
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-# shellcheck source=pins.sh
+# shellcheck source=SCRIPTDIR/pins.sh
 . "$here/pins.sh"
 
 # Explicit so earlier config/env cannot pick an LLM engine, auto-allow, or the System 2
 # judge (which otherwise calls the `claude`/`codex` CLI for commands the rules miss).
-REFLEX_ARGS=(--agents claude,codex --profile supervised --mode enforce --engine local --allow off --judge off)
+REFLEX_ARGS=(--agents "claude,codex" --profile supervised --mode enforce --engine local --allow off --judge off)
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/agent-shield"
 SS_DIR="$DATA/skillspector-$SKILLSPECTOR_VERSION-${SKILLSPECTOR_COMMIT:0:12}"
 SS_BIN="$HOME/.local/bin/skillspector"
