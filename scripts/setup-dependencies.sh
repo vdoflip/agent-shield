@@ -86,10 +86,15 @@ install_skillspector() {
   printf 'Installing SkillSpector dependencies from its uv.lock...\n'
   # --locked fails rather than re-resolve; uv verifies every package hash in the lock.
   uv sync --project "$SS_DIR" --locked --no-dev --no-editable --quiet
+  # Check the version before linking, so a bad install never replaces a good link.
+  local got
+  got="$("$SS_DIR/.venv/bin/skillspector" --version 2>&1 | tail -n 1 || true)"
+  [[ "$got" =~ (^|[^0-9.])v?${SKILLSPECTOR_VERSION//./\\.}($|[^0-9.]) ]] \
+    || die "unexpected SkillSpector version output: $got"
   ln -sfn -- "$SS_DIR/.venv/bin/skillspector" "$SS_BIN"
-  local got; got="$("$SS_BIN" --version 2>&1 | tail -n 1)"
-  [[ "$got" == *"v$SKILLSPECTOR_VERSION"* ]] || die "unexpected SkillSpector version: $got"
   printf 'SkillSpector %s installed: %s\n' "$SKILLSPECTOR_VERSION" "$SS_BIN"
+  [[ "$(command -v skillspector 2>/dev/null || true)" == "$SS_BIN" ]] \
+    || echo "Warning: $(dirname "$SS_BIN") is not first on PATH for skillspector; add it to PATH." >&2
 }
 
 install_reflex() {

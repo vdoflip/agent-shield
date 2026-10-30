@@ -41,6 +41,24 @@ frontmatter_name() {
 
 real_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 
+# True when DIR holds only what install.sh installs (SKILL.md, README.md, LICENSE,
+# scripts/), as regular files byte-identical to the running copy. Any extra,
+# missing, linked, or changed file means it is not this tool.
+is_exact_self_copy() {
+  local dir="$1" f rel
+  [[ -f "$dir/SKILL.md" && -d "$dir/scripts" ]] || return 1
+  while IFS= read -r f; do
+    [[ -f "$f" && ! -L "$f" ]] || return 1
+    rel="${f#"$dir"/}"
+    case "$rel" in SKILL.md|README.md|LICENSE|scripts/*) ;; *) return 1 ;; esac
+    cmp -s "$f" "$SELF_ROOT/$rel" || return 1
+  done < <(find "$dir" -mindepth 1 ! -type d)
+  for rel in SKILL.md README.md LICENSE; do
+    [[ ! -f "$SELF_ROOT/$rel" || -f "$dir/$rel" ]] || return 1
+  done
+  diff -r "$dir/scripts" "$SELF_ROOT/scripts" >/dev/null 2>&1
+}
+
 # Print "Publisher (where)" when PATH is a trusted install location, else nothing.
 # Trust comes only from where the skill lives and its vendor's own metadata there.
 trusted_source() {
@@ -48,10 +66,8 @@ trusted_source() {
   real="$(real_dir "$1")" || return 0
   parent="$(dirname "$real")"; name="$(basename "$real")"
 
-  # Agent Shield: the same SKILL.md and scripts as the copy running right now.
-  if [[ "$name" == agent-shield && -f "$real/SKILL.md" ]] \
-     && cmp -s "$real/SKILL.md" "$SELF_ROOT/SKILL.md" \
-     && diff -r "$real/scripts" "$SELF_ROOT/scripts" >/dev/null 2>&1; then
+  # Agent Shield: the copy running right now, or an exact installed copy of it.
+  if [[ "$real" == "$SELF_ROOT" ]] || is_exact_self_copy "$real"; then
     echo 'Agent Shield (this tool)'; return
   fi
 
@@ -83,9 +99,11 @@ PY
 import os, stat, sys
 conf, parent = sys.argv[1], sys.argv[2]
 st = os.stat(conf, follow_symlinks=False)
-if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o022:
-    print(f"Agent Shield: ignoring {conf}: must be a regular file you own, not group/world-writable.",
-          file=sys.stderr)
+folder = os.stat(os.path.dirname(os.path.abspath(conf)))
+if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o022
+        or folder.st_uid != os.getuid() or folder.st_mode & 0o022):
+    print(f"Agent Shield: ignoring {conf}: it and its folder must be yours and not "
+          "group/world-writable.", file=sys.stderr)
     sys.exit(0)
 for line in open(conf, encoding="utf-8"):
     line = line.strip()
@@ -121,8 +139,8 @@ status() {
 # Python deliberately validates the stable, documented top-level JSON schema.
 # It does NOT interpret arbitrary content of findings as instructions.
 assess_json() {
-  local report="$1" caution="$2" trusted="$3"
-  python3 - "$report" "$caution" "$trusted" <<'PY'
+  local report="$1" caution="$2" trusted="$3" scan_rc="$4"
+  python3 - "$report" "$caution" "$trusted" "$scan_rc" <<'PY'
 import json, sys
 try:
     with open(sys.argv[1], encoding="utf-8") as stream:
@@ -162,6 +180,14 @@ if len(issues) > 10:
 
 if trusted:
     print(f"Trusted source: {trusted}. Score and incomplete analysis do not block; hard findings do.")
+    if sys.argv[4] == "1":
+        # Exit 1 is only acceptable when the report itself explains it; a crash also exits 1.
+        completeness = report.get("analysis_completeness")
+        incomplete = isinstance(completeness, dict) and completeness.get("is_complete") is False
+        if report.get("execution_successful") is not True or not (score > 50 or incomplete):
+            print("BLOCK: scanner exit 1 is not explained by the report (possible crash).",
+                  file=sys.stderr)
+            sys.exit(1)
     if hard_issues:
         for issue in hard_issues[:10]:
             print("  HARD:", str(issue.get("id", "?"))[:30], str(issue.get("severity", "?"))[:20],
@@ -181,7 +207,6 @@ PY
 scan_gate() {
   local target="$1" caution="$2" trusted="$3" report scan_rc parse_rc
   command -v skillspector >/dev/null 2>&1 || die 'skillspector is not installed; refusing to proceed.'
-  command -v python3 >/dev/null 2>&1 || die 'python3 is required to validate scanner JSON.'
   report="$(mktemp "$(tmp_root)/agent-shield-report.XXXXXXXX")"
   # Always remove report: output may contain sensitive paths and findings.
   # Secrets and privileged content should not be scanned without reviewing trust model.
@@ -194,7 +219,7 @@ scan_gate() {
     rm -f -- "$report"
     die "scanner did not produce a report (exit $scan_rc)."
   fi
-  if assess_json "$report" "$caution" "$trusted"; then parse_rc=0; else parse_rc=$?; fi
+  if assess_json "$report" "$caution" "$trusted" "$scan_rc"; then parse_rc=0; else parse_rc=$?; fi
   rm -f -- "$report"
   # SkillSpector exit 1 = risk > 50 or incomplete analysis; 2+ = error.
   # A trusted source may pass with exit 1; errors never pass.
@@ -229,13 +254,15 @@ main() {
   done
   case "$agent" in claude|codex|both) ;; *) die 'agent must be claude, codex, or both';; esac
   [[ -e "$target" ]] || die "input not found: $target"
+  command -v python3 >/dev/null 2>&1 || die 'python3 is required to validate scanner JSON.'
   [[ "$strict" == true ]] || trusted="$(trusted_source "$target")"
 
   if [[ "$action" == scan ]]; then
     # SkillSpector refuses symlinked inputs; scan what the link points to (what agents load).
-    local resolved
+    local resolved absolute
     resolved="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$target")"
-    [[ "$resolved" == "$target" ]] || printf 'Scanning link target: %s\n' "$resolved"
+    absolute="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$target")"
+    [[ "$resolved" == "$absolute" ]] || printf 'Scanning link target: %s\n' "$resolved"
     scan_gate "$resolved" "$caution" "$trusted"; return
   fi
 
