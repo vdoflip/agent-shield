@@ -195,7 +195,10 @@ python3 -m unittest discover -s tests -v
 bash -n install.sh scripts/*.sh
 ```
 
-Tests use fake scanner responses and temporary home directories; they do not install security products. They run on macOS and Linux.
+Tests use fake scanner responses and temporary home directories; they do not install security products or use the network. They run on macOS and Linux.
+
+- `tests/test_guard.py`: the scan and install policy (SAFE/CAUTION/DO_NOT_INSTALL, scanner errors, every kind of malformed report), trusted sources and how each one can be spoofed, install edge cases (symlinks, special files, name mismatches, existing destinations, installing the scanned snapshot rather than the live source), command-line errors, `install.sh`, and the `setup-dependencies.sh` plan.
+- `tests/test_repo.py`: static checks that the pins have the right format and match the README, the build requirements are exact and hashed, and every workflow pins actions by commit, starts with no permissions, and does not keep checkout credentials.
 
 ## How Agent Shield itself is checked
 
