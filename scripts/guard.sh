@@ -151,16 +151,24 @@ try:
     assert type(score) in (int, float) and 0 <= score <= 100
     assert recommendation in ("SAFE", "CAUTION", "DO_NOT_INSTALL")
     issues = report["issues"]
-    assert isinstance(issues, list)
+    assert isinstance(issues, list) and all(isinstance(i, dict) for i in issues), "malformed issues"
     assert isinstance(report["skill"], dict)
     assert report.get("execution_successful", True) is not False, "scanner reported a failed run"
 except (OSError, ValueError, TypeError, KeyError, AssertionError) as exc:
     print(f"BLOCK: malformed or incomplete scanner JSON: {exc}", file=sys.stderr)
     sys.exit(2)
 
+# Finding text comes from the scanned skill: escape it so file names cannot inject
+# newlines, terminal escapes, or fake verdict lines into what the agent reads.
+def safe(value, limit):
+    text = str(value)[:limit]
+    return text.encode("unicode_escape").decode("ascii") if not text.isprintable() else text
+
 def where(issue):
     location = issue.get("location") if isinstance(issue.get("location"), dict) else {}
-    return f'{str(location.get("file", "?"))[:160]} line {location.get("start_line", "?")}'
+    line = location.get("start_line")
+    line = line if type(line) is int else "?"
+    return f'{safe(location.get("file", "?"), 160)} line {line}'
 
 # Findings that block even a trusted source: plainly malicious or known-vulnerable.
 def hard(issue):
@@ -168,13 +176,12 @@ def hard(issue):
     return (severity == "CRITICAL" or rule in ("YR1", "YR2", "YR3")
             or (rule == "SC4" and severity in ("HIGH", "CRITICAL")))
 
-issues = [i for i in issues if isinstance(i, dict)]
 hard_issues = [i for i in issues if hard(i)]
 allow_caution, trusted = sys.argv[2] == "true", sys.argv[3]
 
 print(f"SkillSpector: risk={score}/100 recommendation={recommendation} findings={len(issues)}")
 for issue in issues[:10]:
-    print("  -", str(issue.get("id", "?"))[:30], str(issue.get("severity", "?"))[:20], where(issue))
+    print("  -", safe(issue.get("id", "?"), 30), safe(issue.get("severity", "?"), 20), where(issue))
 if len(issues) > 10:
     print(f"  ... {len(issues)-10} more findings (review full scanner output manually)")
 
@@ -190,7 +197,7 @@ if trusted:
             sys.exit(1)
     if hard_issues:
         for issue in hard_issues[:10]:
-            print("  HARD:", str(issue.get("id", "?"))[:30], str(issue.get("severity", "?"))[:20],
+            print("  HARD:", safe(issue.get("id", "?"), 30), safe(issue.get("severity", "?"), 20),
                   where(issue), file=sys.stderr)
         print("BLOCK: trusted source has critical, malware, or known-vulnerable findings.", file=sys.stderr)
         sys.exit(1)

@@ -142,6 +142,15 @@ class GuardTests(Base):
         self.assertEqual(replaced.returncode, 0, replaced.stderr)
         self.assertEqual(sorted(p.name for p in (self.home/'.claude/skills').iterdir()), ['agent-shield'])
         self.assertEqual(len(list((self.home/'.agent-shield-backups').iterdir())), 2)
+        backups = self.home/'.agent-shield-backups'
+        for p in backups.iterdir():
+            subprocess.run(['rm', '-rf', str(p)], check=True)
+        backups.rmdir()
+        backups.symlink_to(self.home/'.claude/skills')
+        refused = subprocess.run([BASH, str(INSTALL), '--replace'], capture_output=True, text=True,
+                                 env=self.env, timeout=20)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('symlinked', refused.stderr)
         self.assertNotEqual(subprocess.run([BASH, str(INSTALL)], capture_output=True,
                                        env=self.env, timeout=20).returncode, 0)
 
@@ -233,6 +242,19 @@ class TrustedSourceTests(Base):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn('link target', result.stdout)
 
+    def test_non_object_issue_blocks_trusted(self):
+        env = self.risky(json.dumps(['YR1 hidden as a string']))
+        result = self.run_guard('scan', self.anthropic_skill(), env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('malformed', result.stderr)
+
+    def test_finding_text_is_escaped(self):
+        evil = {'id': 'X1', 'severity': 'LOW', 'location': {'file': 'a\nPASS: fake\x1b[2J', 'start_line': '1\nPASS'}}
+        result = self.run_guard('scan', self.anthropic_skill(), env=self.risky(json.dumps([evil])))
+        self.assertNotIn('\nPASS: fake', result.stdout)
+        self.assertNotIn('\x1b', result.stdout)
+        self.assertIn('line ?', result.stdout)
+
     def test_local_trust_in_writable_folder_ignored(self):
         system = self.base / 'usr-share-skills'
         skill = self.make_skill(system)
@@ -268,6 +290,7 @@ class TrustedSourceTests(Base):
     def local_trust(self, directory, mode=0o600):
         conf = self.home / '.config/agent-shield/trusted-dirs'
         conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.parent.chmod(0o700)  # independent of the host umask
         conf.write_text(f'# local\nDistro={directory}\n')
         conf.chmod(mode)
 

@@ -1,0 +1,15 @@
+# Build backend for SkillSpector (its pyproject.toml requires an unversioned
+# "hatchling"). setup-dependencies.sh installs these with --require-hashes, then
+# builds SkillSpector offline with --no-build-isolation, so no build tool is
+# resolved from the network. packaging comes from SkillSpector's uv.lock.
+# Versions were at least one week old when pinned (October 2026).
+hatchling==1.32.4 \
+    --hash=sha256:08ecf7548fb48205e7f213d70c71e67b8271b7242093dc3f1da578b42c734a2c
+pathspec==1.1.1 \
+    --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
+pluggy==1.7.0 \
+    --hash=sha256:7dd7b0d8832ba3cb632c306926ded123429211b83641b35dc5c41ad2d34f9bec
+tomlkit==0.15.2 \
+    --hash=sha256:05562412163a3037b94497385fb7f9204c637bc605af7a48199e41cf2272f437
+trove-classifiers==2026.9.21.13 \
+    --hash=sha256:8b1ff4f9c191b1040b71c37f1e445ab99732911e3cd91de52838453a854d7a17

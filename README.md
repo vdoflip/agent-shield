@@ -100,7 +100,7 @@ The setup links `skillspector` and `reflex` into `~/.local/bin`. Make sure it is
 
 | Tool | What is pinned | How it is enforced |
 |---|---|---|
-| SkillSpector `2.13.2` | Git commit `abd82935…` (tag `v2.13.2`) and its `uv.lock` (158 packages) | Fetches that commit by hash and checks `HEAD`; `uv sync --locked` refuses to re-resolve and verifies every package's sha256. Installed under `~/.local/share/agent-shield/` and linked to `~/.local/bin/skillspector`. |
+| SkillSpector `2.13.2` | Git commit `abd82935…` (tag `v2.13.2`) and its `uv.lock` (158 packages) | Fetches that commit by hash and checks `HEAD`; `uv sync --locked` refuses to re-resolve and verifies every package's sha256. Its build tool (`hatchling`, unversioned upstream) comes from `scripts/skillspector-build.txt` with required hashes, and SkillSpector is then built offline (`--no-index --no-build-isolation`). Installed under `~/.local/share/agent-shield/` and linked to `~/.local/bin/skillspector`. |
 | Reflex `0.18.2` | npm tarball sha512 (built from git commit `b9ccab1`, tag `v0.18.2`) | Downloads with `npm pack`, checks the sha512 and version, and runs setup from that verified copy, never through `npx`. Reflex has no npm dependencies and no install scripts. |
 
 `guard.sh status` shows the installed versions next to the pinned ones. To upgrade, review the new release and update every value in `pins.sh` together.
@@ -142,7 +142,7 @@ Most vendor-shipped skills trip SkillSpector's patterns: Office XML schemas with
 |---|---|
 | Anthropic | The skill is in `~/.claude/skills/synced/<bucket>/` (claude.ai account sync) and that folder's `manifest.json` lists it with `source` `anthropic` or `anthropic-example`. |
 | OpenAI | The skill is in `${CODEX_HOME:-~/.codex}/skills/.system/` next to Codex's `.codex-system-skills.marker`. |
-| Agent Shield | The folder is named `agent-shield` and its `SKILL.md` and `scripts/` match the running copy byte for byte. |
+| Agent Shield | The folder is the running copy itself, or an exact installed copy: only `SKILL.md`, `README.md`, `LICENSE`, and `scripts/`, all regular files, byte-identical to the running copy, nothing extra. |
 
 For a trusted source, the risk score and incomplete analysis do not block. These still block:
 
@@ -153,7 +153,7 @@ For a trusted source, the risk score and incomplete analysis do not block. These
 
 The output names the trusted source, and all findings are still listed. Use `--strict` to ignore the trusted list, for example for an audit. To trust another source for everyone, edit `trusted_source()` in `scripts/guard.sh`.
 
-**Local trusted directories.** To trust a source on your machine only, add `LABEL=DIRECTORY` lines to `~/.config/agent-shield/trusted-dirs` (or under `$XDG_CONFIG_HOME`). Skills directly inside `DIRECTORY` (after resolving symlinks) get the trusted policy. The file is ignored unless you own it and only you can write it (`chmod 600`). Prefer directories only root can write, such as skills shipped by a signed distro package. Find the owning package with `pacman -Qo`, `dpkg -S`, or `rpm -qf`, then add for example:
+**Local trusted directories.** To trust a source on your machine only, add `LABEL=DIRECTORY` lines to `~/.config/agent-shield/trusted-dirs` (or under `$XDG_CONFIG_HOME`). Skills directly inside `DIRECTORY` (after resolving symlinks) get the trusted policy. The file is ignored unless you own it and its folder, and neither is writable by group or others (`chmod 700 ~/.config/agent-shield`, `chmod 600` the file). Prefer directories only root can write, such as skills shipped by a signed distro package. Find the owning package with `pacman -Qo`, `dpkg -S`, or `rpm -qf`, then add for example:
 
 ```
 MyDistro=/usr/share/my-distro/agents/skills
