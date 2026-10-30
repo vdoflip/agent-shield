@@ -74,17 +74,44 @@ PY
   then
     echo 'Anthropic (claude.ai account sync)'; return
   fi
+
+  # Local additions: LABEL=DIRECTORY lines; skills directly inside DIRECTORY are trusted.
+  # The file is ignored unless it is yours and only you can write it.
+  local conf="${XDG_CONFIG_HOME:-$HOME/.config}/agent-shield/trusted-dirs"
+  [[ -f "$conf" ]] || return 0
+  python3 - "$conf" "$parent" <<'PY' || true
+import os, stat, sys
+conf, parent = sys.argv[1], sys.argv[2]
+st = os.stat(conf, follow_symlinks=False)
+if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o022:
+    print(f"Agent Shield: ignoring {conf}: must be a regular file you own, not group/world-writable.",
+          file=sys.stderr)
+    sys.exit(0)
+for line in open(conf, encoding="utf-8"):
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    label, directory = (part.strip() for part in line.split("=", 1))
+    directory = os.path.expanduser(directory)
+    if label and os.path.isdir(directory) and os.path.realpath(directory) == parent:
+        print(f"{label[:60]} (local trusted directory {directory})")
+        break
+PY
 }
 
 status() {
+  # shellcheck source=pins.sh
+  . "$SELF_ROOT/scripts/pins.sh"
   if command -v reflex >/dev/null 2>&1; then
+    printf 'Reflex: %s (pinned %s)\n' "$(reflex version 2>/dev/null | tail -n 1)" "$REFLEX_VERSION"
     printf '\n--- Reflex doctor ---\n'; reflex doctor || true
     printf '\n--- Reflex status ---\n'; reflex status || true
   else
     printf 'Reflex: NOT FOUND. Runtime enforcement is not confirmed.\n'
   fi
   if command -v skillspector >/dev/null 2>&1; then
-    printf '\nSkillSpector: installed (%s)\n' "$(command -v skillspector)"
+    printf '\nSkillSpector: %s at %s (pinned v%s)\n' "$(skillspector --version 2>/dev/null | tail -n 1)" \
+      "$(command -v skillspector)" "$SKILLSPECTOR_VERSION"
   else
     printf '\nSkillSpector: NOT FOUND. Pre-install scanning is unavailable.\n'
   fi
@@ -205,7 +232,11 @@ main() {
   [[ "$strict" == true ]] || trusted="$(trusted_source "$target")"
 
   if [[ "$action" == scan ]]; then
-    scan_gate "$target" "$caution" "$trusted"; return
+    # SkillSpector refuses symlinked inputs; scan what the link points to (what agents load).
+    local resolved
+    resolved="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$target")"
+    [[ "$resolved" == "$target" ]] || printf 'Scanning link target: %s\n' "$resolved"
+    scan_gate "$resolved" "$caution" "$trusted"; return
   fi
 
   [[ -d "$target" && ! -L "$target" ]] || die 'install requires a regular local directory, not a link, archive, or URL.'
