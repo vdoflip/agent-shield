@@ -12,6 +12,8 @@ INSTALL = ROOT / "install.sh"
 MOCK = '''#!/usr/bin/env python3
 import json, os, sys
 out = sys.argv[sys.argv.index('--output') + 1]
+if os.environ.get('MOCK_REFUSE_SYMLINK') == '1' and os.path.islink(sys.argv[2]):
+    sys.exit(2)
 recommendation = os.environ.get('MOCK_VERDICT', 'SAFE')
 if os.environ.get('MOCK_BAD_JSON') == '1':
     open(out, 'w').write('not json')
@@ -41,7 +43,8 @@ class Base(unittest.TestCase):
         (self.skill / 'SKILL.md').write_text('---\nname: demo-skill\ndescription: demo\n---\n# Hi\n')
         self.env = os.environ.copy()
         self.env.update(HOME=str(self.home), PATH=str(self.bin)+os.pathsep+self.env.get('PATH',''),
-                        TMPDIR=str(self.base))
+                        TMPDIR=str(self.base), XDG_CONFIG_HOME=str(self.home/'.config'))
+        self.env.pop('CODEX_HOME', None)
 
     def run_guard(self, *args, env=None):
         return subprocess.run(['bash', str(GUARD), *map(str,args)], text=True,
@@ -112,8 +115,14 @@ class GuardTests(Base):
                                 capture_output=True, text=True, env=self.env, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Nothing installed', result.stdout)
-        self.assertIn('skillspector.git@v', result.stdout)
+        pins = dict(line.split('=', 1) for line in (ROOT/'scripts'/'pins.sh').read_text().splitlines()
+                    if '=' in line and not line.startswith('#'))
+        self.assertIn(pins['SKILLSPECTOR_COMMIT'], result.stdout)
+        self.assertIn(pins['REFLEX_INTEGRITY'], result.stdout)
+        self.assertIn('--locked', result.stdout)
         self.assertIn('--engine local --allow off', result.stdout)
+        self.assertNotIn('npx', result.stdout)
+        self.assertNotIn('latest', result.stdout)
 
     def test_install_meta_skill(self):
         result = subprocess.run(['bash', str(INSTALL)], capture_output=True, text=True,
@@ -201,6 +210,45 @@ class TrustedSourceTests(Base):
     def test_trusted_scanner_error_blocks(self):
         env = dict(self.env, MOCK_EXIT='2')
         self.assertNotEqual(self.run_guard('scan', self.anthropic_skill(), env=env).returncode, 0)
+
+    def local_trust(self, directory, mode=0o600):
+        conf = self.home / '.config/agent-shield/trusted-dirs'
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_text(f'# local\nDistro={directory}\n')
+        conf.chmod(mode)
+
+    def test_local_trusted_dir_passes(self):
+        system = self.base / 'usr-share-skills'
+        skill = self.make_skill(system)
+        link = self.home / '.claude/skills/vendor-skill'
+        link.parent.mkdir(parents=True)
+        link.symlink_to(skill)
+        self.local_trust(system)
+        result = self.run_guard('scan', link, env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Trusted source: Distro (local trusted directory', result.stdout)
+
+    def test_local_trust_only_matches_listed_dir(self):
+        self.local_trust(self.base / 'other')
+        (self.base / 'other').mkdir()
+        skill = self.make_skill(self.base / 'usr-share-skills')
+        self.assertNotEqual(self.run_guard('scan', skill, env=self.risky()).returncode, 0)
+
+    def test_writable_local_trust_file_ignored(self):
+        system = self.base / 'usr-share-skills'
+        skill = self.make_skill(system)
+        self.local_trust(system, mode=0o666)
+        result = self.run_guard('scan', skill, env=self.risky())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('ignoring', result.stderr)
+
+    def test_scan_resolves_symlinked_skill(self):
+        link = self.base / 'link-skill'
+        link.symlink_to(self.skill)
+        env = dict(self.env, MOCK_REFUSE_SYMLINK='1')
+        result = self.run_guard('scan', link, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Scanning link target', result.stdout)
 
     def test_trusted_install_to_codex(self):
         result = self.run_guard('install', self.anthropic_skill(), '--agent', 'codex', env=self.risky())
