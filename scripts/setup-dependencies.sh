@@ -42,7 +42,9 @@ Nothing installed. With --apply, after you review the upstream projects:
 
 SkillSpector $SKILLSPECTOR_VERSION (git commit $SKILLSPECTOR_COMMIT)
   git fetch $SKILLSPECTOR_REPO $SKILLSPECTOR_COMMIT  ->  $SS_DIR
-  uv sync --locked --no-dev --no-editable    (exact versions and hashes from its uv.lock)
+  uv sync --locked --no-dev --no-install-project   (exact versions and hashes from its uv.lock)
+  uv pip install --require-hashes -r scripts/skillspector-build.txt   (pinned build backend)
+  uv pip install --no-index --no-build-isolation <checkout>   (offline build of SkillSpector)
   link $SS_BIN
 
 Reflex $REFLEX_VERSION (npm tarball, $REFLEX_INTEGRITY)
@@ -85,7 +87,13 @@ install_skillspector() {
   [[ -z "$(git -C "$SS_DIR" status --porcelain --untracked-files=no)" ]] || die "$SS_DIR has local changes."
   printf 'Installing SkillSpector dependencies from its uv.lock...\n'
   # --locked fails rather than re-resolve; uv verifies every package hash in the lock.
-  uv sync --project "$SS_DIR" --locked --no-dev --no-editable --quiet
+  # The project itself is built separately so its build backend is pinned too.
+  uv sync --project "$SS_DIR" --locked --no-dev --no-install-project --quiet
+  local py="$SS_DIR/.venv/bin/python"
+  printf 'Building SkillSpector offline with the pinned build backend...\n'
+  uv pip install --python "$py" --quiet --require-hashes --no-deps --only-binary :all: \
+    -r "$here/skillspector-build.txt"
+  uv pip install --python "$py" --quiet --no-deps --no-index --no-build-isolation "$SS_DIR"
   # Check the version before linking, so a bad install never replaces a good link.
   local got
   got="$("$SS_DIR/.venv/bin/skillspector" --version 2>&1 | tail -n 1 || true)"
@@ -121,12 +129,15 @@ print(base64.b64encode(hashlib.sha512(open(sys.argv[1], "rb").read()).digest()).
   "${reflex[@]}" setup "${REFLEX_ARGS[@]}" --dry-run
   printf '%s\n' 'Configuring Reflex in enforce mode (local engine, no auto-allow)...'
   "${reflex[@]}" setup "${REFLEX_ARGS[@]}"
-  if command -v reflex >/dev/null 2>&1; then
-    reflex doctor
-    reflex status
-  else
-    echo 'reflex not on PATH. Add ~/.local/bin to PATH, then run reflex doctor/status.' >&2
-  fi
+  # Use the command this setup just linked, not whatever `reflex` comes first on PATH.
+  local installed="$HOME/.local/bin/reflex"
+  [[ -x "$installed" ]] || die "Reflex setup did not create $installed."
+  got="$("$installed" version 2>/dev/null | tail -n 1 || true)"
+  [[ "$got" == *"$REFLEX_VERSION"* ]] || die "installed Reflex reports an unexpected version: $got"
+  "$installed" doctor
+  "$installed" status
+  [[ "$(command -v reflex 2>/dev/null || true)" == "$installed" ]] \
+    || echo "Warning: $(dirname "$installed") is not first on PATH for reflex; add it to PATH." >&2
   printf '%s\n' 'Now restart both agents. In Codex run /hooks and trust the Reflex entries.'
 }
 

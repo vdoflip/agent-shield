@@ -20,6 +20,9 @@ for dest in "${dests[@]}"; do
     echo "Already installed: $dest (use --replace after reviewing changes)" >&2; exit 1
   fi
 done
+# Checked before anything is written, so a refusal leaves no partial install.
+backups="$HOME/.agent-shield-backups"
+[[ ! -L "$backups" ]] || { echo 'Refusing symlinked ~/.agent-shield-backups.' >&2; exit 2; }
 for dest in "${dests[@]}"; do
   parent="$(dirname "$dest")"
   mkdir -p -- "$parent"
@@ -29,8 +32,8 @@ for dest in "${dests[@]}"; do
   done
   if [[ -e "$dest" || -L "$dest" ]]; then
     # Back up outside the skills folder, or the agent would load the backup as a second skill.
-    mkdir -p -- "$HOME/.agent-shield-backups"
-    backup="$HOME/.agent-shield-backups/$(basename "$(dirname "$parent")")-agent-shield.$(date +%Y%m%d-%H%M%S).$$"
+    [[ -d "$backups" ]] || mkdir -m 700 -- "$backups"
+    backup="$backups/$(basename "$(dirname "$parent")")-agent-shield.$(date +%Y%m%d-%H%M%S).$$"
     mv -- "$dest" "$backup"
     echo "Backup: $backup"
   fi
