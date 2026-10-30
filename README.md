@@ -21,6 +21,7 @@ Checked against SkillSpector `v2.13.2` and Reflex `0.18.2` (October 2026); `setu
 |---|---|---|
 | Installing a skill **through `guard.sh install`** | Copies the skill to a private staging folder, rejects symlinks, special files, and a `name:` that differs from the folder, scans that exact copy with SkillSpector, and installs only that copy. Never overwrites an existing skill. | Blocking. Fails closed on scanner errors, bad/missing reports, and incomplete analysis. |
 | Skill scan verdicts | `SAFE` (score 0–20) passes; `CAUTION` (21–50) needs `--allow-caution` from a human; `DO_NOT_INSTALL` (51+) always blocks. A self-shipped suppression baseline in the skill is ignored. | Static analysis only: pattern rules, YARA rules, Python AST and taint checks, dependency CVE lookups. |
+| Trusted vendors (Anthropic, OpenAI) and Agent Shield itself | Recognised by install location (see [Trusted sources](#trusted-sources)). Score and incomplete analysis don't block; CRITICAL findings, malware/webshell/cryptominer matches, and dependencies with known HIGH/CRITICAL vulnerabilities still do. | Blocking for those hard findings only. Scanner errors still block. |
 | Commands the agent runs (Claude Code) | Reflex checks `Bash`, `Task`/`Agent`, `Edit`/`Write`/`MultiEdit`/`NotebookEdit`, and MCP tool calls **before** they run, and can ask you or deny. | Blocking in `enforce` mode. If Reflex itself errors, it asks you. |
 | Commands the agent runs (Codex) | Same gate on `Bash`, `spawn_agent`, `apply_patch`, MCP tools. | Blocking once you trust the hooks in `/hooks`. |
 | Prompt injection in tool results (Claude Code) | After `WebFetch`, `WebSearch`, `Read` of files outside your project, `Bash` that fetches remote content, and MCP results, Reflex scans the text. **Warn** adds a note for the model; **block** cuts the offending text out of the result. Marks the session as tainted, so later commands get stricter checks. | Pattern-based (local engine). Runs after the tool, see below. |
@@ -38,7 +39,7 @@ Checked against SkillSpector `v2.13.2` and Reflex `0.18.2` (October 2026); `setu
 - **Tools Reflex does not hook.** In Claude Code: `Read` inside your project, `Glob`, `Grep`, `Skill`, `WebFetch`/`WebSearch` *requests* (only their results are scanned), and other built-in tools are not gated before running. Codex's hosted web search is not hooked at all. Claude Desktop, Cursor, and other hosts without hooks get advisory checks only (via `reflex mcp`).
 - **Hook timeouts or a broken install.** If a Reflex hook times out (10–15 s), or `node` or the Reflex files are missing, Claude Code and Codex **let the action run**. `guard.sh status` and `reflex doctor` help you notice this; they do not prevent it.
 - **Shadow mode.** If Reflex is in `shadow` mode (its default when set up without `--mode enforce`), it only logs. `setup-dependencies.sh` uses `enforce`.
-- **A determined local attacker.** A process running as your user can edit hooks, settings, the staging folder during a scan, or the installed skill afterwards. Reflex adds permission rules that ask before editing its own files, but that is not tamper-proof.
+- **A determined local attacker.** A process running as your user can edit hooks, settings, the staging folder during a scan, or the installed skill afterwards. It could also drop a skill into a trusted location (the claude.ai sync folder or `~/.codex/skills/.system`) to get the relaxed policy. Reflex adds permission rules that ask before editing its own files, but that is not tamper-proof.
 - **Privacy.** With `--no-llm`, skill contents are not sent to an LLM, but SkillSpector sends dependency names and versions to OSV.dev. Reflex's local engine makes no network calls. The optional `jev` engine or `autonomous` profile *do* send commands and text to an external model; this setup turns them off explicitly.
 - **Supply chain of the tools themselves.** Reflex and SkillSpector are third-party code that runs on your machine with your permissions. The pinned versions reduce, but do not remove, that risk. Review them before `--apply`.
 - **Native Windows.**
@@ -116,6 +117,25 @@ reflex scan ./untrusted-text.txt
 # Manually inspect an uncertain CAUTION verdict, then *explicitly* accept it
 bash ~/.claude/skills/agent-shield/scripts/guard.sh install ./reviewed-skill --agent claude --allow-caution
 ```
+
+### Trusted sources
+
+Most vendor-shipped skills trip SkillSpector's patterns: Office XML schemas with a byte-order mark look like "hidden instructions", `os.environ.copy()` looks like credential harvesting, and paths a skill creates at runtime count as "incomplete analysis". To keep these usable, `guard.sh` trusts three sources, **by where the skill is installed, never by what its files claim**:
+
+| Source | Recognised when |
+|---|---|
+| Anthropic | The skill is in `~/.claude/skills/synced/<bucket>/` (claude.ai account sync) and that folder's `manifest.json` lists it with `source` `anthropic` or `anthropic-example`. |
+| OpenAI | The skill is in `${CODEX_HOME:-~/.codex}/skills/.system/` next to Codex's `.codex-system-skills.marker`. |
+| Agent Shield | The folder is named `agent-shield` and its `SKILL.md` and `scripts/` match the running copy byte for byte. |
+
+For a trusted source, the risk score and incomplete analysis do not block. These still block:
+
+- any finding with severity `CRITICAL`
+- YARA malware (`YR1`), webshell (`YR2`), or cryptominer (`YR3`) matches
+- dependencies with a known `HIGH` or `CRITICAL` vulnerability (`SC4`)
+- scanner errors, failed runs, or malformed reports
+
+The output names the trusted source, and all findings are still listed. Use `--strict` to ignore the trusted list, for example for an audit. To trust another source, edit `trusted_source()` in `scripts/guard.sh`.
 
 `--allow-caution` never overrides a `DO_NOT_INSTALL` verdict, a scanner error, or incomplete analysis. It is an **explicit** exception for a human-reviewed `CAUTION` result. Do not let an autonomous agent choose this option on its own.
 

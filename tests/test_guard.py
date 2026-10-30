@@ -1,4 +1,5 @@
 """Offline contract tests. Mock SkillSpector; no third-party installers run."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -18,12 +19,12 @@ else:
     report = {
         'risk_assessment': {'score': {'SAFE':0,'CAUTION':30,'DO_NOT_INSTALL':65}[recommendation],
                             'recommendation': recommendation},
-        'skill': {'name': 'demo'}, 'issues': []}
+        'skill': {'name': 'demo'}, 'issues': json.loads(os.environ.get('MOCK_ISSUES', '[]'))}
     with open(out, 'w') as f: json.dump(report, f)
 sys.exit(int(os.environ.get('MOCK_EXIT', '0')))
 '''
 
-class GuardTests(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -46,6 +47,8 @@ class GuardTests(unittest.TestCase):
         return subprocess.run(['bash', str(GUARD), *map(str,args)], text=True,
                               capture_output=True, env=env or self.env, timeout=20)
 
+
+class GuardTests(Base):
     def test_safe_scan(self):
         result = self.run_guard('scan', self.skill)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -121,8 +124,89 @@ class GuardTests(unittest.TestCase):
         self.assertTrue((self.home/'.claude/skills/agent-shield/scripts/guard.sh').is_file())
         self.assertFalse((self.home/'.claude/skills/agent-shield/tests').exists())
         self.assertFalse((self.home/'.claude/skills/agent-shield/.git').exists())
+        replaced = subprocess.run(['bash', str(INSTALL), '--replace'], capture_output=True, text=True,
+                                  env=self.env, timeout=20)
+        self.assertEqual(replaced.returncode, 0, replaced.stderr)
+        self.assertEqual(sorted(p.name for p in (self.home/'.claude/skills').iterdir()), ['agent-shield'])
+        self.assertEqual(len(list((self.home/'.agent-shield-backups').iterdir())), 2)
         self.assertNotEqual(subprocess.run(['bash', str(INSTALL)], capture_output=True,
                                        env=self.env, timeout=20).returncode, 0)
+
+class TrustedSourceTests(Base):
+    """Anthropic/OpenAI/self are trusted by location; hard findings still block."""
+
+    def make_skill(self, parent, name='vendor-skill'):
+        skill = parent / name
+        skill.mkdir(parents=True)
+        (skill / 'SKILL.md').write_text(f'---\nname: {name}\ndescription: x\n---\n')
+        return skill
+
+    def anthropic_skill(self, source='anthropic'):
+        bucket = self.home / '.claude/skills/synced/bucket-1'
+        skill = self.make_skill(bucket)
+        (bucket / 'manifest.json').write_text(json.dumps(
+            {'skills': [{'skillId': 'vendor-skill', 'source': source}]}))
+        return skill
+
+    def codex_skill(self, marker=True):
+        system = self.home / '.codex/skills/.system'
+        skill = self.make_skill(system)
+        if marker:
+            (system / '.codex-system-skills.marker').write_text('abc')
+        return skill
+
+    def risky(self, issues='[]'):
+        return dict(self.env, MOCK_VERDICT='DO_NOT_INSTALL', MOCK_EXIT='1', MOCK_ISSUES=issues)
+
+    def test_anthropic_high_score_passes(self):
+        result = self.run_guard('scan', self.anthropic_skill(), env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Trusted source: Anthropic', result.stdout)
+
+    def test_openai_high_score_passes(self):
+        result = self.run_guard('scan', self.codex_skill(), env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Trusted source: OpenAI', result.stdout)
+
+    def test_self_passes(self):
+        result = self.run_guard('scan', ROOT, env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Trusted source: Agent Shield', result.stdout)
+
+    def test_untrusted_manifest_source_blocks(self):
+        self.assertNotEqual(self.run_guard('scan', self.anthropic_skill('user'), env=self.risky()).returncode, 0)
+
+    def test_codex_without_marker_blocks(self):
+        self.assertNotEqual(self.run_guard('scan', self.codex_skill(marker=False), env=self.risky()).returncode, 0)
+
+    def test_modified_self_copy_blocks(self):
+        copy = self.make_skill(self.base / 'elsewhere', 'agent-shield')
+        self.assertNotEqual(self.run_guard('scan', copy, env=self.risky()).returncode, 0)
+
+    def test_strict_ignores_trust(self):
+        self.assertNotEqual(self.run_guard('scan', self.anthropic_skill(), '--strict', env=self.risky()).returncode, 0)
+
+    def test_trusted_hard_findings_block(self):
+        skill = self.anthropic_skill()
+        for issue in ({'id': 'YR1', 'severity': 'CRITICAL'}, {'id': 'YR3', 'severity': 'HIGH'},
+                      {'id': 'SC4', 'severity': 'HIGH'}, {'id': 'P1', 'severity': 'CRITICAL'}):
+            result = self.run_guard('scan', skill, env=self.risky(json.dumps([issue])))
+            self.assertNotEqual(result.returncode, 0, issue)
+            self.assertIn('HARD:', result.stderr)
+
+    def test_trusted_ordinary_high_findings_pass(self):
+        issues = json.dumps([{'id': 'E2', 'severity': 'HIGH'}, {'id': 'SC4', 'severity': 'MEDIUM'}])
+        self.assertEqual(self.run_guard('scan', self.anthropic_skill(), env=self.risky(issues)).returncode, 0)
+
+    def test_trusted_scanner_error_blocks(self):
+        env = dict(self.env, MOCK_EXIT='2')
+        self.assertNotEqual(self.run_guard('scan', self.anthropic_skill(), env=env).returncode, 0)
+
+    def test_trusted_install_to_codex(self):
+        result = self.run_guard('install', self.anthropic_skill(), '--agent', 'codex', env=self.risky())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.home/'.agents/skills/vendor-skill/SKILL.md').is_file())
+
 
 if __name__ == '__main__':
     unittest.main()
