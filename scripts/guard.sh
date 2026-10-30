@@ -151,7 +151,9 @@ try:
     assert type(score) in (int, float) and 0 <= score <= 100
     assert recommendation in ("SAFE", "CAUTION", "DO_NOT_INSTALL")
     issues = report["issues"]
-    assert isinstance(issues, list) and all(isinstance(i, dict) for i in issues), "malformed issues"
+    assert isinstance(issues, list) and all(
+        isinstance(i, dict) and isinstance(i.get("id"), str) and i["id"]
+        and i.get("severity") in ("LOW", "MEDIUM", "HIGH", "CRITICAL") for i in issues), "malformed issues"
     assert isinstance(report["skill"], dict)
     assert report.get("execution_successful", True) is not False, "scanner reported a failed run"
 except (OSError, ValueError, TypeError, KeyError, AssertionError) as exc:

@@ -4,6 +4,11 @@ language: "en-US"
 reviews:
   profile: "assertive"
   high_level_summary: true
+  # Request changes on blocking findings; approve only after they are resolved,
+  # the latest commit is reviewed, and checks pass. The author cannot force it.
+  auto_approvals:
+    enabled: true
+    allow_author_approval: false
   auto_review:
     enabled: true
     drafts: false
