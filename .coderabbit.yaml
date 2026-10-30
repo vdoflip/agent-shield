@@ -1,0 +1,43 @@
+# CodeRabbit AI review (free for public repositories). Reviews every pull request.
+language: "en-US"
+
+reviews:
+  profile: "assertive"
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "scripts/guard.sh"
+      instructions: |
+        Security gate for installing agent skills. It must fail closed: any scanner
+        error, malformed report, or unexpected state must block. Flag anything that
+        lets a skill choose its own trust level, follow symlinks out of the staged
+        copy, overwrite an existing skill, or pass on untrusted input. Must run on
+        macOS bash 3.2 and GNU/Linux.
+    - path: "scripts/setup-dependencies.sh"
+      instructions: |
+        Must install exactly the versions in scripts/pins.sh and nothing newer: no
+        npx, no "latest", no unpinned dependencies. Hash or commit checks must happen
+        before any downloaded code runs. Flag any network fetch that is not verified.
+    - path: "scripts/pins.sh"
+      instructions: |
+        Pinned upstream versions and hashes. Any change must update every related
+        value together; flag mismatches between version, commit, and hash comments.
+    - path: "install.sh"
+      instructions: |
+        Installs only this skill into ~/.claude/skills and ~/.agents/skills. Must
+        never overwrite without --replace, never follow symlinks, and keep backups
+        outside the skills folders.
+    - path: ".github/workflows/**"
+      instructions: |
+        Actions must be pinned to full commit SHAs, jobs must use least-privilege
+        permissions, and checkout must not persist credentials.
+  tools:
+    shellcheck:
+      enabled: true
+    actionlint:
+      enabled: true
+
+chat:
+  auto_reply: true

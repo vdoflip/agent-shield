@@ -1,6 +1,6 @@
 # Agent Shield — meta-skill for Claude Code and Codex (macOS & Linux)
 
-[![CI](https://github.com/vdoflip/agent-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/ci.yml) [![CodeQL](https://github.com/vdoflip/agent-shield/actions/workflows/codeql.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/codeql.yml) [![SkillSpector self-scan](https://github.com/vdoflip/agent-shield/actions/workflows/skillspector.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/skillspector.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/vdoflip/agent-shield/badge)](https://securityscorecards.dev/viewer/?uri=github.com/vdoflip/agent-shield)
+[![CI](https://github.com/vdoflip/agent-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/ci.yml) [![CodeQL](https://github.com/vdoflip/agent-shield/actions/workflows/codeql.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/codeql.yml) [![SkillSpector self-scan](https://github.com/vdoflip/agent-shield/actions/workflows/skillspector.yml/badge.svg)](https://github.com/vdoflip/agent-shield/actions/workflows/skillspector.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/vdoflip/agent-shield/badge)](https://securityscorecards.dev/viewer/?uri=github.com/vdoflip/agent-shield) [![CodeRabbit Reviews](https://img.shields.io/coderabbit/prs/github/vdoflip/agent-shield?label=CodeRabbit%20Reviews)](https://coderabbit.ai) [![License: MIT](https://img.shields.io/github/license/vdoflip/agent-shield)](LICENSE)
 
 A portable `SKILL.md` + local shell helpers that coordinate:
 
@@ -39,7 +39,7 @@ Checked against SkillSpector `v2.13.2` and Reflex `0.18.2` (October 2026); `setu
 - **Malicious behaviour that looks normal.** Static analysis has false negatives: obfuscated code, logic split across files, code downloaded at run time, or harmful instructions phrased harmlessly can pass. It also has false positives.
 - **Prompt injection, fully.** The injection guard is pattern-based. New or subtle wording can get through. It runs *after* the tool returns, so with a warn (or with the Claude Code plugin install, even a block) the text still reaches the model, with a note attached.
 - **Tools Reflex does not hook.** In Claude Code: `Read` inside your project, `Glob`, `Grep`, `Skill`, `WebFetch`/`WebSearch` *requests* (only their results are scanned), and other built-in tools are not gated before running. Codex's hosted web search is not hooked at all. Claude Desktop, Cursor, and other hosts without hooks get advisory checks only (via `reflex mcp`).
-- **Hook timeouts or a broken install.** If a Reflex hook times out (10–15 s), or `node` or the Reflex files are missing, Claude Code and Codex **let the action run**. `guard.sh status` and `reflex doctor` help you notice this; they do not prevent it.
+- **Hook timeouts or a broken install.** If a Reflex hook times out (10–15 s), or `node` or the Reflex files are missing (Reflex records the absolute path of the `node` that ran setup, so removing that Node version, for example with a version manager, breaks the hooks; re-run the setup after changing Node), Claude Code and Codex **let the action run**. `guard.sh status` and `reflex doctor` help you notice this; they do not prevent it.
 - **Shadow mode.** If Reflex is in `shadow` mode (its default when set up without `--mode enforce`), it only logs. `setup-dependencies.sh` uses `enforce`.
 - **A determined local attacker.** A process running as your user can edit hooks, settings, the staging folder during a scan, or the installed skill afterwards. It could also drop a skill into a trusted location (the claude.ai sync folder or `~/.codex/skills/.system`) to get the relaxed policy. Reflex adds permission rules that ask before editing its own files, but that is not tamper-proof.
 - **Privacy.** With `--no-llm`, skill contents are not sent to an LLM, but SkillSpector sends dependency names and versions to OSV.dev. Reflex's local engine makes no network calls. Reflex's `jev` engine, its `autonomous` profile, and its "System 2" judge *do* send commands and text to an external model. The judge is **on by default** in Reflex's normal profile whenever a `claude` or `codex` CLI is installed; this setup turns all three off explicitly (`--engine local --judge off`).
@@ -51,10 +51,11 @@ Checked against SkillSpector `v2.13.2` and Reflex `0.18.2` (October 2026); `setu
 | Tool | Needed for | macOS | Linux |
 |---|---|---|---|
 | `bash`, `python3` (any 3.x) | `guard.sh`, JSON validation | preinstalled / `brew install python` | distro package (`python3`) |
-| `node` 18+ and `npx` | Reflex | `brew install node` | distro package, `mise`, `nvm`, or nodejs.org |
+| `node` 18+ and `npm` | Reflex | `brew install node` | distro package, `mise`, `nvm`, or nodejs.org |
+| `git` | Fetching the pinned SkillSpector commit | preinstalled with Xcode tools / `brew install git` | distro package |
 | `uv` | SkillSpector (it fetches its own Python 3.12+ if needed) | `brew install uv` | `pacman -S uv`, `pipx install uv`, or `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 
-Both `uv tool install` and Reflex put binaries in `~/.local/bin`. Make sure it is on `PATH` (`uv tool update-shell` adds it).
+The setup links `skillspector` and `reflex` into `~/.local/bin`. Make sure it is on `PATH`. Don't install SkillSpector yourself with `uv tool install`; the setup installs the pinned version and refuses to overwrite another one.
 
 ## Installation
 
@@ -209,6 +210,7 @@ Every push and pull request runs free GitHub Actions (public repo, no paid featu
 | `skillspector.yml` | Installs the pinned SkillSpector with this repo's own `setup-dependencies.sh` (so the pinned install is tested too), scans Agent Shield, uploads all findings, then runs `guard.sh scan` on itself | Scanner errors, or hard findings: CRITICAL, malware/webshell/cryptominer, known-vulnerable dependency |
 | `scorecard.yml` | [OpenSSF Scorecard](https://securityscorecards.dev): supply-chain practices such as pinned dependencies, token permissions, branch protection | — (score and results only) |
 | `dependabot.yml` | Weekly updates for the commit-pinned actions, with a 7-day cooldown | — |
+| CodeRabbit (GitHub App, `.coderabbit.yaml`) | AI review of every pull request, with extra instructions for the security-critical scripts | — (review comments only) |
 
 All actions are pinned to full commit SHAs, and every job starts with no token permissions and gets only what it needs. GitHub secret scanning and push protection are enabled on the repository.
 
